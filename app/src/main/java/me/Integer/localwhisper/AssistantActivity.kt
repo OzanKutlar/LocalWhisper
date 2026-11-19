@@ -15,7 +15,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
-import android.widget.Toast
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.appcompat.app.AppCompatActivity
@@ -60,6 +59,9 @@ class AssistantActivity : AppCompatActivity() {
     private var currentState = UiState.SETUP_REQUIRED
     private var connectedClients: List<PcClientInfo> = emptyList()
     private var selectedClient: PcClientInfo? = null
+    private val localTarget by lazy {
+        PcClientInfo(id = LOCAL_TARGET_ID, name = getString(R.string.local_target_name))
+    }
     private var clientsLoaded = false
     private var sentClientName = ""
     private var isDismissing = false
@@ -79,6 +81,9 @@ class AssistantActivity : AppCompatActivity() {
         binding = ActivityAssistantBinding.inflate(layoutInflater)
         setContentView(binding.root)
         prefs = ServerPreferences(this)
+        if (prefs.selectedClientId == LOCAL_TARGET_ID) {
+            selectedClient = localTarget
+        }
 
         applyWindowInsets()
         setupStaticListeners()
@@ -319,12 +324,37 @@ class AssistantActivity : AppCompatActivity() {
         }
     }
 
-    private fun sendTranscriptToPc() {
+    private fun sendTranscript() {
         val text = binding.transcriptInput.text?.toString().orEmpty()
         if (text.isEmpty()) {
             showError(getString(R.string.assistant_empty_transcript))
             return
         }
+        if (isLocalTargetSelected()) {
+            sendToPhone(text)
+        } else {
+            sendTranscriptToPc(text)
+        }
+    }
+
+    /** Hands the text to LocalTypingService, which types it once the overlay has closed. */
+    private fun sendToPhone(text: String) {
+        clearError()
+        if (LocalTypingService.enqueue(text)) {
+            hideKeyboard()
+            activeJob?.cancel()
+            activeJob = lifecycleScope.launch { showSentAndDismiss(localTarget.name) }
+            return
+        }
+        val copied = LocalClipboard.copy(this, text)
+        showError(
+            getString(
+                if (copied) R.string.local_typing_disabled_copied else R.string.local_clipboard_failed
+            )
+        )
+    }
+
+    private fun sendTranscriptToPc(text: String) {
         val baseUrl = prefs.buildBaseUrl()
         if (baseUrl == null) {
             showError(getString(R.string.invalid_server_config))
@@ -378,52 +408,55 @@ class AssistantActivity : AppCompatActivity() {
 
     private suspend fun refreshConnectedClients(baseUrl: String) {
         api.fetchClients(baseUrl)
-            .onSuccess { clients ->
-                connectedClients = clients
-                selectPreferredClient()
-            }
+            .onSuccess { clients -> connectedClients = clients }
             .onFailure { exc ->
                 Log.w(TAG, "Could not fetch PC clients", exc)
                 connectedClients = emptyList()
-                selectedClient = null
             }
+        selectPreferredClient()
         clientsLoaded = true
         renderSubtitle()
+        renderBottomSections(currentState)
     }
 
+    /** Saved target if available, else the newest PC, else this phone. */
     private fun selectPreferredClient() {
-        if (connectedClients.isEmpty()) {
-            selectedClient = null
-            return
-        }
         val savedId = prefs.selectedClientId
-        selectedClient = connectedClients.firstOrNull { it.id == savedId } ?: connectedClients.last()
+        selectedClient = if (savedId == LOCAL_TARGET_ID) {
+            localTarget
+        } else {
+            connectedClients.firstOrNull { it.id == savedId }
+                ?: connectedClients.lastOrNull()
+                ?: localTarget
+        }
     }
 
     private fun showTargetPicker() {
-        if (connectedClients.isEmpty()) {
-            Toast.makeText(this, R.string.assistant_no_pc_connected, Toast.LENGTH_SHORT).show()
-            refreshClientsInBackground()
-            return
-        }
-        val names = connectedClients.map { it.name }.toTypedArray()
-        val checkedIndex = connectedClients.indexOfFirst { it.id == selectedClient?.id }
+        val targets = listOf(localTarget) + connectedClients
+        val names = targets.map { it.name }.toTypedArray()
+        val checkedIndex = targets.indexOfFirst { it.id == selectedClient?.id }
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.assistant_pick_target)
             .setSingleChoiceItems(names, checkedIndex) { dialog, which ->
-                selectClient(which)
+                selectTarget(targets.getOrNull(which))
                 dialog.dismiss()
             }
             .setNegativeButton(R.string.assistant_cancel, null)
             .show()
+        if (connectedClients.isEmpty()) {
+            refreshClientsInBackground()
+        }
     }
 
-    private fun selectClient(index: Int) {
-        val chosen = connectedClients.getOrNull(index) ?: return
-        selectedClient = chosen
-        prefs.selectedClientId = chosen.id
+    private fun selectTarget(target: PcClientInfo?) {
+        if (target == null) return
+        selectedClient = target
+        prefs.selectedClientId = target.id
         renderSubtitle()
+        renderBottomSections(currentState)
     }
+
+    private fun isLocalTargetSelected(): Boolean = selectedClient?.id == LOCAL_TARGET_ID
 
     // ------------------------------------------------------------ Rendering
 
@@ -464,8 +497,10 @@ class AssistantActivity : AppCompatActivity() {
 
     private fun renderBottomSections(state: UiState) {
         binding.progressSection.visibility = visibleIf(state == UiState.RECORDING)
-        binding.chipScroll.visibility =
-            visibleIf(state == UiState.REVIEW || state == UiState.SENDING)
+        // AHK key tokens only mean something on a PC, so the chips are hidden for the phone.
+        binding.chipScroll.visibility = visibleIf(
+            (state == UiState.REVIEW || state == UiState.SENDING) && !isLocalTargetSelected()
+        )
     }
 
     private fun renderSubtitle() {
@@ -526,7 +561,7 @@ class AssistantActivity : AppCompatActivity() {
             )
             UiState.REVIEW, UiState.SENDING -> ControlSet(
                 left = if (isKeyboardMode) dictate else restart,
-                center = ControlSpec(R.drawable.ic_send, R.string.assistant_send_to_pc) { sendTranscriptToPc() },
+                center = ControlSpec(R.drawable.ic_send, R.string.assistant_send_to_pc) { sendTranscript() },
                 right = close
             )
             UiState.TRANSCRIBING, UiState.SETUP_REQUIRED -> ControlSet(null, close, null)
@@ -646,6 +681,7 @@ class AssistantActivity : AppCompatActivity() {
         private const val SENT_DISMISS_DELAY_MS = 650L
         private const val DISABLED_ALPHA = 0.4f
         private const val RECORDING_FILE_NAME = "localwhisper_recording.wav"
+        private const val LOCAL_TARGET_ID = "local-phone"
         private val AHK_QUICK_TOKENS = listOf(
             "{Enter}",
             "{Tab}",

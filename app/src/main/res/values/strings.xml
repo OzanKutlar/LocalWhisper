@@ -23,6 +23,10 @@
     <string name="row_launch_overlay_hint">Start dictating right now</string>
     <string name="row_keyboard_mode">Start in keyboard mode</string>
     <string name="row_keyboard_mode_hint">Open the assistant ready to type instead of listening</string>
+    <string name="row_type_on_phone">Type on this phone</string>
+    <string name="type_on_phone_active">Enabled. Pick This phone as the target</string>
+    <string name="type_on_phone_inactive">Tap to enable LocalWhisper typing in Accessibility</string>
+    <string name="local_typing_settings_fallback">Open Settings → Accessibility → LocalWhisper typing</string>
 
     <!-- Main screen: values and feedback -->
     <string name="testing_connection">Connecting to server…</string>
@@ -61,7 +65,8 @@
     <string name="assistant_target_format">Target: %1$s</string>
     <string name="assistant_target_loading">Looking for PC clients…</string>
     <string name="assistant_no_pc_connected">No PC client connected</string>
-    <string name="assistant_pick_target">Send to which PC?</string>
+    <string name="assistant_pick_target">Send text to</string>
+    <string name="local_target_name">This phone</string>
     <string name="assistant_sent_message">Sent to %1$s</string>
 
     <!-- Voice overlay: controls -->
@@ -83,4 +88,12 @@
     <string name="assistant_transcription_failed">Transcription failed</string>
     <string name="assistant_send_failed">Failed to send keystrokes</string>
     <string name="assistant_empty_transcript">Enter or dictate some text before sending.</string>
+
+    <!-- Local (phone) typing -->
+    <string name="local_typing_service_label">LocalWhisper typing</string>
+    <string name="local_typing_service_description">Types the text you send to This phone from the LocalWhisper assistant into the text field you were using. It does nothing else.</string>
+    <string name="local_typing_disabled_copied">Copied to clipboard. Enable LocalWhisper typing in Accessibility to type directly.</string>
+    <string name="local_no_field_copied">No text field was focused, so the text was copied to the clipboard.</string>
+    <string name="local_insert_failed_copied">Could not type into this field, so the text was copied to the clipboard.</string>
+    <string name="local_clipboard_failed">Could not type or copy the text.</string>
 </resources>

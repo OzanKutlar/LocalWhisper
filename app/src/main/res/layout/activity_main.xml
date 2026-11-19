@@ -203,6 +203,22 @@
                         android:focusable="false"
                         android:importantForAccessibility="no" />
                 </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
+                    android:id="@+id/typeOnPhoneRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_type_on_phone" />
+
+                    <TextView
+                        android:id="@+id/typeOnPhoneSubtitle"
+                        style="@style/Widget.LocalWhisper.RowValue"
+                        android:text="@string/type_on_phone_inactive" />
+                </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 

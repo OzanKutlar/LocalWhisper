@@ -73,5 +73,6 @@ python push.py
 4. Tap **Set as Default Digital Assistant** and select **LocalWhisper**.
 5. Press your phone's Assistant button (or tap **Launch Voice Overlay**), speak, review/edit the transcript (adding `{Enter}`, `{Tab}`, `{^a}`, etc. if desired), and tap **Send to PC**.
 6. Prefer typing? Tap the keyboard button in the overlay header to switch to **keyboard mode** and type your message directly (no microphone needed). Turn on **Start in keyboard mode** in the app to make it the default.
+7. **Typing on the phone itself:** in the app, tap **Type on this phone** and enable *LocalWhisper typing* under Accessibility. Then tap the *Target:* line in the overlay and pick **This phone**. The text is inserted at the cursor of the field you were using (`{…}` tokens are typed literally, not as keys). If typing is not possible, the text is copied to the clipboard instead. On Android 13+, if the toggle is greyed out, open **App info → ⋮ → Allow restricted settings** first.
 
 > Only `{…}` tokens are treated as AutoHotkey keys; everything else (including `! + ^ #`) is typed literally. Inside braces, AutoHotkey syntax applies: `{Enter}`, `{Tab 3}`, `{Ctrl down}`, and modifier combos like `{^a}` (Ctrl+A), `{^+Tab}` (Ctrl+Shift+Tab) or `{!F4}` (Alt+F4).

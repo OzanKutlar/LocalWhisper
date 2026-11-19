@@ -2,6 +2,7 @@ package me.Integer.localwhisper
 
 import android.Manifest
 import android.app.role.RoleManager
+import android.content.ComponentName
 import android.content.DialogInterface
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -49,6 +50,7 @@ class MainActivity : AppCompatActivity() {
         updatePermissionRow()
         updateDefaultAssistantRow()
         updateKeyboardModeRow()
+        updateTypeOnPhoneRow()
     }
 
     // ------------------------------------------------------------ Layout
@@ -77,6 +79,7 @@ class MainActivity : AppCompatActivity() {
         binding.defaultAssistantRow.setOnClickListener { openAssistantSettings() }
         binding.launchOverlayRow.setOnClickListener { launchVoiceOverlay() }
         binding.keyboardModeRow.setOnClickListener { toggleStartInKeyboardMode() }
+        binding.typeOnPhoneRow.setOnClickListener { openAccessibilitySettings() }
     }
 
     private fun refreshServerRows() {
@@ -269,6 +272,36 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateKeyboardModeRow() {
         binding.keyboardModeSwitch.isChecked = prefs.startInKeyboardMode
+    }
+
+    // ------------------------------------------------------------ Phone typing
+
+    private fun updateTypeOnPhoneRow() {
+        val enabled = isLocalTypingEnabled()
+        val text = getString(
+            if (enabled) R.string.type_on_phone_active else R.string.type_on_phone_inactive
+        )
+        val color = if (enabled) R.color.lw_success else R.color.lw_accent
+        setColoredText(binding.typeOnPhoneSubtitle, text, color)
+    }
+
+    /** Reads the system list of enabled accessibility services, so it is correct even before the service binds. */
+    private fun isLocalTypingEnabled(): Boolean {
+        val enabled = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        val expected = ComponentName(this, LocalTypingService::class.java)
+        return enabled.split(':').any { ComponentName.unflattenFromString(it) == expected }
+    }
+
+    private fun openAccessibilitySettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        } catch (exc: Exception) {
+            Log.w(TAG, "Accessibility settings unavailable", exc)
+            Toast.makeText(this, R.string.local_typing_settings_fallback, Toast.LENGTH_LONG).show()
+        }
     }
 
     // ------------------------------------------------------------ Permission
