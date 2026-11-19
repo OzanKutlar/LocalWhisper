@@ -18,6 +18,8 @@ from urllib.parse import urlencode
 
 import websockets
 
+from ahk_payload import build_send_units, plan_typing_delay_ms
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -26,7 +28,7 @@ LOGGER = logging.getLogger("localwhisper.pc_client")
 
 CLIENT_DIR = Path(__file__).resolve().parent
 AHK_SCRIPT = CLIENT_DIR / "send_keys.ahk"
-AHK_TIMEOUT_S = 15
+AHK_TIMEOUT_S = 25  # covers paced typing (~8 s budget plus pauses)
 MAX_RECONNECT_ATTEMPTS = 10000
 MAX_BACKOFF_S = 15
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -63,20 +65,27 @@ def find_autohotkey_v1(explicit_path: str | None = None) -> Path:
     )
 
 
-def execute_ahk_send(ahk_exe: Path, text: str, send_mode: str) -> None:
-    """Writes payload to a UTF-8 temp file and invokes send_keys.ahk without stealing focus."""
+def execute_ahk_send(ahk_exe: Path, text: str, send_mode: str, human_typing: bool) -> None:
+    """Writes escaped send units to a UTF-8 temp file and invokes send_keys.ahk without stealing focus."""
     if not AHK_SCRIPT.is_file():
         raise FileNotFoundError(f"Missing AHK script: {AHK_SCRIPT}")
     if not text:
         raise ValueError("Keystroke payload is empty")
 
+    units = build_send_units(text)
+    if not units:
+        raise ValueError("Keystroke payload has nothing to type")
+    delay_ms = plan_typing_delay_ms(len(units), human_typing)
+    # One unit per line when pacing; a single line is sent in one burst.
+    payload = "\n".join(units) if delay_ms > 0 else "".join(units)
+
     fd, temp_path = tempfile.mkstemp(prefix="localwhisper_keys_", suffix=".txt")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
+            handle.write(payload)
 
         result = subprocess.run(
-            [str(ahk_exe), str(AHK_SCRIPT), temp_path, send_mode],
+            [str(ahk_exe), str(AHK_SCRIPT), temp_path, send_mode, str(delay_ms)],
             capture_output=True,
             text=True,
             timeout=AHK_TIMEOUT_S,
@@ -115,6 +124,7 @@ async def handle_message(
     raw_message: str,
     ahk_exe: Path,
     send_mode: str,
+    human_typing: bool,
 ) -> None:
     try:
         message = json.loads(raw_message)
@@ -138,7 +148,7 @@ async def handle_message(
     text = str(message.get("text", ""))
     LOGGER.info("Executing keystrokes (%d chars) via AHK (%s)", len(text), send_mode)
     try:
-        await asyncio.to_thread(execute_ahk_send, ahk_exe, text, send_mode)
+        await asyncio.to_thread(execute_ahk_send, ahk_exe, text, send_mode, human_typing)
         ack = {"type": "ack", "id": request_id, "ok": True}
     except Exception as exc:
         LOGGER.error("AHK send failed: %s", exc)
@@ -147,7 +157,13 @@ async def handle_message(
     await websocket.send(json.dumps(ack))
 
 
-async def run_client(server_url: str, client_name: str, ahk_exe: Path, send_mode: str) -> None:
+async def run_client(
+    server_url: str,
+    client_name: str,
+    ahk_exe: Path,
+    send_mode: str,
+    human_typing: bool,
+) -> None:
     ws_url = build_ws_url(server_url, client_name)
     LOGGER.info("Using AutoHotkey: %s", ahk_exe)
     LOGGER.info("Target server: %s", ws_url)
@@ -164,7 +180,7 @@ async def run_client(server_url: str, client_name: str, ahk_exe: Path, send_mode
                 backoff_s = 2
                 async for raw_message in websocket:
                     if isinstance(raw_message, str):
-                        await handle_message(websocket, raw_message, ahk_exe, send_mode)
+                        await handle_message(websocket, raw_message, ahk_exe, send_mode, human_typing)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -202,6 +218,12 @@ def parse_args() -> argparse.Namespace:
         default="Input",
         help="AutoHotkey SendMode (default: Input; use Event if a game ignores SendInput)",
     )
+    parser.add_argument(
+        "--typing",
+        choices=("human", "instant"),
+        default="human",
+        help="Typing pace (default: human; instant sends everything at once)",
+    )
     return parser.parse_args()
 
 
@@ -214,7 +236,9 @@ def main() -> int:
         return 1
 
     try:
-        asyncio.run(run_client(args.server, args.name, ahk_exe, args.send_mode))
+        asyncio.run(
+            run_client(args.server, args.name, ahk_exe, args.send_mode, args.typing == "human")
+        )
     except KeyboardInterrupt:
         LOGGER.info("LocalWhisper PC client stopped.")
     return 0

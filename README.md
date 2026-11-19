@@ -55,6 +55,7 @@ python pc_client/client.py --server ws://<SERVER_LAN_IP>:8765 --name GamingPC
 Optional flags:
 - `--ahk-path "C:\Path\To\AutoHotkeyU64.exe"` — Override AutoHotkey v1.1 path.
 - `--send-mode Event` — Use `SendMode, Event` instead of `Input` if a specific app or game ignores `SendInput`.
+- `--typing instant` — Send everything at once instead of typing at a human-like pace (default `human`; long messages speed up automatically).
 
 ---
 
@@ -70,4 +71,6 @@ python push.py
 2. Enter your Server PC's LAN IP (port `8765`) and tap **Save & Test Connection**.
 3. Grant Microphone permission.
 4. Tap **Set as Default Digital Assistant** and select **LocalWhisper**.
-5. Press your phone's Assistant button (or tap **Launch Voice Overlay**), speak, review/edit the transcript (adding `{Enter}`, `{Tab}`, `^a`, etc. if desired), and tap **Send to PC**.
+5. Press your phone's Assistant button (or tap **Launch Voice Overlay**), speak, review/edit the transcript (adding `{Enter}`, `{Tab}`, `{^a}`, etc. if desired), and tap **Send to PC**.
+
+> Only `{…}` tokens are treated as AutoHotkey keys; everything else (including `! + ^ #`) is typed literally. Inside braces, AutoHotkey syntax applies: `{Enter}`, `{Tab 3}`, `{Ctrl down}`, and modifier combos like `{^a}` (Ctrl+A), `{^+Tab}` (Ctrl+Shift+Tab) or `{!F4}` (Alt+F4).

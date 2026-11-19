@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from fastapi import WebSocket
 
 LOGGER = logging.getLogger("localwhisper.hub")
-DEFAULT_ACK_TIMEOUT_S = 15.0
+DEFAULT_ACK_TIMEOUT_S = 30.0  # PC clients may type at human pace
 
 
 class NoClientConnectedError(RuntimeError):

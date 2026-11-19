@@ -562,9 +562,9 @@ class AssistantActivity : AppCompatActivity() {
             "{Tab}",
             "{Backspace}",
             "{Esc}",
-            "^a",
-            "^c",
-            "^v"
+            "{^a}",
+            "{^c}",
+            "{^v}"
         )
     }
 }
