@@ -27,6 +27,10 @@ class ServerPreferences(context: Context) {
         get() = prefs.getString(KEY_CLIENT_ID, "").orEmpty()
         set(value) = prefs.edit().putString(KEY_CLIENT_ID, value.trim()).apply()
 
+    var startInKeyboardMode: Boolean
+        get() = prefs.getBoolean(KEY_KEYBOARD_MODE, false)
+        set(value) = prefs.edit().putBoolean(KEY_KEYBOARD_MODE, value).apply()
+
     fun buildBaseUrl(): String? {
         val host = sanitizeHost(serverHost)
         val port = serverPort
@@ -42,6 +46,7 @@ class ServerPreferences(context: Context) {
         private const val KEY_SERVER_PORT = "server_port"
         private const val KEY_LANGUAGE = "language"
         private const val KEY_CLIENT_ID = "selected_client_id"
+        private const val KEY_KEYBOARD_MODE = "start_in_keyboard_mode"
         const val DEFAULT_HOST = "192.168.1.100"
         const val DEFAULT_PORT = 8765
 

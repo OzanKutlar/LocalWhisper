@@ -63,6 +63,7 @@ class AssistantActivity : AppCompatActivity() {
     private var clientsLoaded = false
     private var sentClientName = ""
     private var isDismissing = false
+    private var isKeyboardMode = false
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
@@ -84,6 +85,7 @@ class AssistantActivity : AppCompatActivity() {
         setupRecordingSlider()
         setupAhkChips()
         animateContentIn()
+        isKeyboardMode = prefs.startInKeyboardMode
         beginAssistantFlow()
     }
 
@@ -118,6 +120,10 @@ class AssistantActivity : AppCompatActivity() {
         binding.openSettingsButton.setOnClickListener { openMainScreen() }
         binding.openMainButton.setOnClickListener { openMainScreen() }
         binding.targetPcText.setOnClickListener { showTargetPicker() }
+        binding.keyboardModeButton.setOnClickListener {
+            performTapHaptic(it)
+            toggleInputMode()
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -177,15 +183,74 @@ class AssistantActivity : AppCompatActivity() {
     // ------------------------------------------------------------ Flow
 
     private fun beginAssistantFlow() {
-        if (!hasRecordAudioPermission()) {
-            showSetupRequired(getString(R.string.assistant_mic_required))
-            return
-        }
         if (prefs.buildBaseUrl() == null) {
             showSetupRequired(getString(R.string.invalid_server_config))
             return
         }
+        if (isKeyboardMode) {
+            enterKeyboardMode()
+            return
+        }
+        if (!hasRecordAudioPermission()) {
+            showSetupRequired(getString(R.string.assistant_mic_required))
+            return
+        }
         startRecording()
+    }
+
+    // ------------------------------------------------------------ Input mode
+
+    private fun toggleInputMode() {
+        if (isKeyboardMode) enterVoiceMode() else enterKeyboardMode()
+    }
+
+    /** Stops any recording and lets the user type the text to send instead of dictating it. */
+    private fun enterKeyboardMode() {
+        if (prefs.buildBaseUrl() == null) {
+            showSetupRequired(getString(R.string.invalid_server_config))
+            return
+        }
+        // Keep an existing transcript so it can be edited by hand; otherwise start empty.
+        val keepText = currentState == UiState.REVIEW
+        isKeyboardMode = true
+        stopTimer()
+        binding.waveformView.setActive(false)
+        activeJob?.cancel()
+        recorder?.cancel()
+        recorder = null
+        clearError()
+        if (!keepText) {
+            binding.transcriptInput.setText("")
+        }
+        refreshClientsInBackground()
+        setUiState(UiState.REVIEW)
+        showKeyboard()
+    }
+
+    private fun enterVoiceMode() {
+        isKeyboardMode = false
+        hideKeyboard()
+        if (!hasRecordAudioPermission()) {
+            showSetupRequired(getString(R.string.assistant_mic_required))
+            return
+        }
+        startRecording()
+    }
+
+    private fun showKeyboard() {
+        val input = binding.transcriptInput
+        input.requestFocus()
+        input.setSelection(input.text?.length ?: 0)
+        // Posted so the field is laid out and focused before the IME is requested.
+        input.post {
+            WindowCompat.getInsetsController(window, input).show(WindowInsetsCompat.Type.ime())
+        }
+    }
+
+    private fun hideKeyboard() {
+        val input = binding.transcriptInput
+        input.clearFocus()
+        WindowCompat.getInsetsController(window, input).hide(WindowInsetsCompat.Type.ime())
     }
 
     private fun startRecording() {
@@ -267,6 +332,7 @@ class AssistantActivity : AppCompatActivity() {
         }
 
         clearError()
+        hideKeyboard()
         setUiState(UiState.SENDING)
 
         activeJob?.cancel()
@@ -368,7 +434,23 @@ class AssistantActivity : AppCompatActivity() {
         binding.stateLabel.text = getString(stateLabelRes(state))
         renderSubtitle()
         configureControls(state)
+        renderModeToggle(state)
         binding.transcriptInput.isEnabled = state != UiState.SENDING
+    }
+
+    private fun renderModeToggle(state: UiState) {
+        val button = binding.keyboardModeButton
+        val available = when (state) {
+            UiState.RECORDING, UiState.REVIEW -> true
+            // Lets the user type when only the mic permission is missing.
+            UiState.SETUP_REQUIRED -> !isKeyboardMode && prefs.buildBaseUrl() != null
+            UiState.TRANSCRIBING, UiState.SENDING, UiState.SENT -> false
+        }
+        button.visibility = if (available) View.VISIBLE else View.GONE
+        button.setIconResource(if (isKeyboardMode) R.drawable.ic_mic else R.drawable.ic_keyboard)
+        button.contentDescription = getString(
+            if (isKeyboardMode) R.string.assistant_voice_mode_desc else R.string.assistant_keyboard_mode_desc
+        )
     }
 
     private fun renderArtwork(state: UiState) {
@@ -413,7 +495,8 @@ class AssistantActivity : AppCompatActivity() {
         UiState.SETUP_REQUIRED -> R.string.assistant_state_error
         UiState.RECORDING -> R.string.assistant_state_listening
         UiState.TRANSCRIBING -> R.string.assistant_state_transcribing
-        UiState.REVIEW -> R.string.assistant_state_review
+        UiState.REVIEW ->
+            if (isKeyboardMode) R.string.assistant_state_typing else R.string.assistant_state_review
         UiState.SENDING -> R.string.assistant_state_sending
         UiState.SENT -> R.string.assistant_state_sent
     }
@@ -434,6 +517,7 @@ class AssistantActivity : AppCompatActivity() {
     private fun controlsFor(state: UiState): ControlSet {
         val close = ControlSpec(R.drawable.ic_close, R.string.assistant_cancel) { dismissOverlay() }
         val restart = ControlSpec(R.drawable.ic_restart, R.string.assistant_restart_desc) { startRecording() }
+        val dictate = ControlSpec(R.drawable.ic_mic, R.string.assistant_voice_mode_desc) { enterVoiceMode() }
         return when (state) {
             UiState.RECORDING -> ControlSet(
                 left = close,
@@ -441,7 +525,7 @@ class AssistantActivity : AppCompatActivity() {
                 right = restart
             )
             UiState.REVIEW, UiState.SENDING -> ControlSet(
-                left = restart,
+                left = if (isKeyboardMode) dictate else restart,
                 center = ControlSpec(R.drawable.ic_send, R.string.assistant_send_to_pc) { sendTranscriptToPc() },
                 right = close
             )
@@ -506,7 +590,12 @@ class AssistantActivity : AppCompatActivity() {
     // ------------------------------------------------------------ Navigation
 
     private fun openMainScreen() {
-        startActivity(Intent(this, MainActivity::class.java))
+        // NEW_TASK puts settings in the app's normal task. Without it, MainActivity joined this
+        // overlay's hidden task and reappeared behind the overlay on the next assistant launch.
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
         finish()
     }
 

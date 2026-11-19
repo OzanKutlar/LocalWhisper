@@ -21,6 +21,8 @@
     <string name="row_default_assistant">Default digital assistant</string>
     <string name="row_launch_overlay">Launch voice overlay</string>
     <string name="row_launch_overlay_hint">Start dictating right now</string>
+    <string name="row_keyboard_mode">Start in keyboard mode</string>
+    <string name="row_keyboard_mode_hint">Open the assistant ready to type instead of listening</string>
 
     <!-- Main screen: values and feedback -->
     <string name="testing_connection">Connecting to server…</string>
@@ -49,6 +51,7 @@
     <string name="assistant_state_listening">Listening</string>
     <string name="assistant_state_transcribing">Transcribing</string>
     <string name="assistant_state_review">Review &amp; edit</string>
+    <string name="assistant_state_typing">Type a message</string>
     <string name="assistant_state_sending">Sending…</string>
     <string name="assistant_state_sent">Sent</string>
     <string name="assistant_state_error">Setup needed</string>
@@ -70,6 +73,8 @@
     <string name="assistant_send_to_pc">Send to PC</string>
     <string name="assistant_open_settings">Open LocalWhisper</string>
     <string name="assistant_transcript_hint">Transcript (supports AHK keys like {Enter})</string>
+    <string name="assistant_keyboard_mode_desc">Type instead of speaking</string>
+    <string name="assistant_voice_mode_desc">Dictate instead of typing</string>
 
     <!-- Voice overlay: errors -->
     <string name="assistant_mic_required">Microphone permission is required. Open LocalWhisper to grant it.</string>

@@ -72,5 +72,6 @@ python push.py
 3. Grant Microphone permission.
 4. Tap **Set as Default Digital Assistant** and select **LocalWhisper**.
 5. Press your phone's Assistant button (or tap **Launch Voice Overlay**), speak, review/edit the transcript (adding `{Enter}`, `{Tab}`, `{^a}`, etc. if desired), and tap **Send to PC**.
+6. Prefer typing? Tap the keyboard button in the overlay header to switch to **keyboard mode** and type your message directly (no microphone needed). Turn on **Start in keyboard mode** in the app to make it the default.
 
 > Only `{…}` tokens are treated as AutoHotkey keys; everything else (including `! + ^ #`) is typed literally. Inside braces, AutoHotkey syntax applies: `{Enter}`, `{Tab 3}`, `{Ctrl down}`, and modifier combos like `{^a}` (Ctrl+A), `{^+Tab}` (Ctrl+Shift+Tab) or `{!F4}` (Alt+F4).

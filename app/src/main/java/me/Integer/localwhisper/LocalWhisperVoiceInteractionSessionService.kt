@@ -26,7 +26,8 @@ private class LocalWhisperVoiceInteractionSession(
 
     private fun launchAssistantUi() {
         val intent = Intent(context, AssistantActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            // CLEAR_TASK guarantees a fresh task so no stale screen (e.g. settings) sits underneath.
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         }
         try {
             startAssistantActivity(intent)

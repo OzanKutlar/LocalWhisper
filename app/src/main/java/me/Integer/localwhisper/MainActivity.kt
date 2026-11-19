@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         updatePermissionRow()
         updateDefaultAssistantRow()
+        updateKeyboardModeRow()
     }
 
     // ------------------------------------------------------------ Layout
@@ -75,6 +76,7 @@ class MainActivity : AppCompatActivity() {
         binding.micPermissionRow.setOnClickListener { handleMicPermissionRequest() }
         binding.defaultAssistantRow.setOnClickListener { openAssistantSettings() }
         binding.launchOverlayRow.setOnClickListener { launchVoiceOverlay() }
+        binding.keyboardModeRow.setOnClickListener { toggleStartInKeyboardMode() }
     }
 
     private fun refreshServerRows() {
@@ -247,11 +249,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun launchVoiceOverlay() {
-        if (!hasRecordAudioPermission()) {
+        // Keyboard mode does not record audio, so the mic permission is only needed for voice.
+        if (!hasRecordAudioPermission() && !prefs.startInKeyboardMode) {
             handleMicPermissionRequest()
             return
         }
-        startActivity(Intent(this, AssistantActivity::class.java))
+        val intent = Intent(this, AssistantActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        }
+        startActivity(intent)
+    }
+
+    // ------------------------------------------------------------ Keyboard mode
+
+    private fun toggleStartInKeyboardMode() {
+        prefs.startInKeyboardMode = !prefs.startInKeyboardMode
+        updateKeyboardModeRow()
+    }
+
+    private fun updateKeyboardModeRow() {
+        binding.keyboardModeSwitch.isChecked = prefs.startInKeyboardMode
     }
 
     // ------------------------------------------------------------ Permission
