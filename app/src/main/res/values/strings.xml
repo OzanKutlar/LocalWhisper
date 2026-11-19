@@ -1,14 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">MobileAppProject</string>
-    <string name="action_settings">Settings</string>
-    <!-- Strings used for fragments -->
-    <string name="first_fragment_label">First Fragment</string>
-    <string name="second_fragment_label">Second Fragment</string>
-    <string name="next">Next</string>
-    <string name="previous">Previous</string>
-
-    <string name="hello_first_fragment">Hello first fragment</string>
-    <string name="hello_second_fragment">Hello second fragment. Goodbye!</string>
-    <string name="lorem_ipsum">Lorem ipsum dolor sit amet, consectetur adipiscing elit.</string>
-    <string name="accessibility_description">This service allows the app to perform "Force Stop" actions for requested apps on behalf of the user.</string>
+    <string name="app_name">LocalWhisper</string>
+    <string name="main_subtitle">Local voice-to-keystroke client</string>
+    <string name="grant_mic_permission">Grant Microphone Permission</string>
+    <string name="mic_permission_granted">Microphone permission granted.\nReady to configure server connection.</string>
+    <string name="mic_permission_missing">Microphone permission is required for voice recording.</string>
+    <string name="mic_permission_already_granted">Microphone permission already granted</string>
+    <string name="mic_permission_denied">Microphone permission denied</string>
 </resources>
