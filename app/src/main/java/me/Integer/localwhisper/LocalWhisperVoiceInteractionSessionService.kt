@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.service.voice.VoiceInteractionSession
 import android.service.voice.VoiceInteractionSessionService
+import android.util.Log
 
 class LocalWhisperVoiceInteractionSessionService : VoiceInteractionSessionService() {
 
@@ -19,14 +20,31 @@ private class LocalWhisperVoiceInteractionSession(
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        launchAssistantUi()
+        finish()
+    }
+
+    private fun launchAssistantUi() {
         val intent = Intent(context, AssistantActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
         try {
             startAssistantActivity(intent)
-        } catch (_: Exception) {
-            context.startActivity(intent)
+        } catch (exc: Exception) {
+            Log.e(TAG, "startAssistantActivity failed, trying startActivity fallback", exc)
+            launchFallback(intent)
         }
-        finish()
+    }
+
+    private fun launchFallback(intent: Intent) {
+        try {
+            context.startActivity(intent)
+        } catch (exc: Exception) {
+            Log.e(TAG, "Fallback startActivity failed; assistant UI not shown", exc)
+        }
+    }
+
+    companion object {
+        private const val TAG = "LW-Session"
     }
 }
