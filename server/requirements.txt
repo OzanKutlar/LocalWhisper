@@ -1,0 +1,7 @@
+# PyTorch with CUDA (e.g. cu128 for RTX 5060 Ti) is expected to be installed already.
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+qwen-asr>=0.0.6
+soundfile>=0.12.1
+numpy>=1.26.0

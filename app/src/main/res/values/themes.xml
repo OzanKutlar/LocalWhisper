@@ -3,4 +3,13 @@
     <style name="Base.Theme.LocalWhisper" parent="Theme.Material3.DayNight.NoActionBar" />
 
     <style name="Theme.LocalWhisper" parent="Base.Theme.LocalWhisper" />
+
+    <style name="Theme.LocalWhisper.Assistant" parent="Theme.LocalWhisper">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.55</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Dialog</item>
+    </style>
 </resources>
