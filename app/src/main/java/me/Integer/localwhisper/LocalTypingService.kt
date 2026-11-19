@@ -106,7 +106,7 @@ class LocalTypingService : AccessibilityService() {
     }
 
     private fun insertAtCursor(field: AccessibilityNodeInfo, text: String): Boolean {
-        val current = if (field.isShowingHintText) "" else field.text?.toString().orEmpty()
+        val current = currentRealText(field)
         val (start, end) = selectionBounds(field, current.length)
         val updated = current.substring(0, start) + text + current.substring(end)
         val textArgs = Bundle().apply {
@@ -117,6 +117,52 @@ class LocalTypingService : AccessibilityService() {
         }
         moveCursor(field, start + text.length)
         return true
+    }
+
+    /**
+     * The field's real contents. Many apps report an empty field's placeholder (e.g. "Message")
+     * as its text without setting isShowingHintText, so that case is detected and treated as empty.
+     */
+    private fun currentRealText(field: AccessibilityNodeInfo): String {
+        val reported = field.text?.toString().orEmpty()
+        val hintFlag = field.isShowingHintText
+        val matchesHint = reported.isNotEmpty() && reported == field.hintText?.toString()
+        val matchesChildLabel = reported.isNotEmpty() && !hintFlag && !matchesHint &&
+            childShowsText(field, reported)
+        // Lengths only: the user's text is never written to the log.
+        Log.d(
+            TAG,
+            "field=${field.className} len=${reported.length} hintFlag=$hintFlag " +
+                "matchesHint=$matchesHint matchesChildLabel=$matchesChildLabel " +
+                "sel=${field.textSelectionStart}..${field.textSelectionEnd}"
+        )
+        return if (hintFlag || matchesHint || matchesChildLabel) "" else reported
+    }
+
+    /** True when a non-editable child or grandchild label shows exactly this text (a drawn placeholder). */
+    private fun childShowsText(field: AccessibilityNodeInfo, text: String): Boolean {
+        return try {
+            val children = boundedChildren(field)
+            children.any { labelText(it) == text } ||
+                children.any { child -> boundedChildren(child).any { labelText(it) == text } }
+        } catch (exc: Exception) {
+            Log.w(TAG, "Could not inspect field children for a placeholder", exc)
+            false
+        }
+    }
+
+    private fun boundedChildren(node: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
+        val count = minOf(node.childCount, MAX_CHILDREN_SCANNED)
+        val result = ArrayList<AccessibilityNodeInfo>(count)
+        for (index in 0 until count) {
+            node.getChild(index)?.let { result.add(it) }
+        }
+        return result
+    }
+
+    private fun labelText(node: AccessibilityNodeInfo): String? {
+        if (node.isEditable) return null
+        return node.text?.toString()
     }
 
     private fun moveCursor(field: AccessibilityNodeInfo, position: Int) {
@@ -153,6 +199,7 @@ class LocalTypingService : AccessibilityService() {
         private const val FIRST_ATTEMPT_DELAY_MS = 300L
         private const val RETRY_INTERVAL_MS = 150L
         private const val MAX_ATTEMPTS = 30 // ~4.5 s, covers the overlay close animation
+        private const val MAX_CHILDREN_SCANNED = 8 // per level, when looking for a placeholder label
 
         @Volatile
         private var instance: LocalTypingService? = null
