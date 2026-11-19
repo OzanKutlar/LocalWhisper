@@ -21,9 +21,7 @@
     <color name="lw_error">#FF5A5F</color>
     <color name="lw_error_soft">#26FF5A5F</color>
     <!-- Voice overlay -->
-    <color name="lw_player_gradient_start">#000000</color>
-    <color name="lw_player_gradient_end">#2A2326</color>
-    <color name="lw_artwork_bg">#15171C</color>
+    <color name="lw_scrim">#99000000</color>
     <color name="lw_slider_inactive">#4DFFFFFF</color>
     <color name="lw_wave_start">#3E91FF</color>
     <color name="lw_wave_mid">#6FB0FF</color>

@@ -19,8 +19,9 @@
     <style name="Theme.LocalWhisper" parent="Base.Theme.LocalWhisper" />
 
     <style name="Theme.LocalWhisper.Assistant" parent="Theme.LocalWhisper">
-        <item name="android:windowIsTranslucent">false</item>
-        <item name="android:windowBackground">@drawable/bg_player_gradient</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">false</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowAnimationStyle">@null</item>
     </style>

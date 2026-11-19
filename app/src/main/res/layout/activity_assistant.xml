@@ -1,88 +1,117 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:id="@+id/playerRoot"
+    android:id="@+id/overlayScrim"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:clipToPadding="false"
-    android:fillViewport="true"
-    android:overScrollMode="never">
+    android:background="@color/lw_scrim">
 
-    <LinearLayout
-        android:id="@+id/playerContent"
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/sheetCard"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:paddingStart="24dp"
-        android:paddingEnd="24dp">
+        android:layout_gravity="bottom"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="12dp"
+        android:clickable="true"
+        android:focusable="true"
+        app:cardBackgroundColor="@color/lw_card_bg"
+        app:cardCornerRadius="28dp"
+        app:cardElevation="0dp"
+        app:strokeWidth="0dp">
 
-        <!-- Top bar -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="20dp"
+            android:paddingTop="14dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="10dp">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/closeButton"
-                style="?attr/materialIconButtonStyle"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_marginStart="-12dp"
-                android:contentDescription="@string/assistant_close_desc"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                app:icon="@drawable/ic_chevron_down"
-                app:iconGravity="textStart"
-                app:iconPadding="0dp"
-                app:iconSize="32dp"
-                app:iconTint="@color/lw_text_primary" />
+            <!-- Header: state, target and actions -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-            <Space
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/stateLabel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:singleLine="true"
+                        android:text="@string/assistant_state_listening"
+                        android:textColor="@color/lw_text_primary"
+                        android:textSize="20sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/targetPcText"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="-6dp"
+                        android:background="?attr/selectableItemBackground"
+                        android:ellipsize="end"
+                        android:paddingStart="6dp"
+                        android:paddingTop="2dp"
+                        android:paddingEnd="6dp"
+                        android:paddingBottom="2dp"
+                        android:singleLine="true"
+                        android:textColor="@color/lw_text_secondary"
+                        android:textSize="14sp" />
+                </LinearLayout>
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/openSettingsButton"
                 style="?attr/materialIconButtonStyle"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
-                android:layout_marginEnd="-12dp"
                 android:contentDescription="@string/assistant_settings_desc"
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
                 app:icon="@drawable/ic_settings"
                 app:iconGravity="textStart"
                 app:iconPadding="0dp"
-                app:iconSize="24dp"
-                app:iconTint="@color/lw_text_primary" />
+                app:iconSize="22dp"
+                app:iconTint="@color/lw_text_secondary" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/closeButton"
+                style="?attr/materialIconButtonStyle"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginEnd="-10dp"
+                android:contentDescription="@string/assistant_close_desc"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                app:icon="@drawable/ic_chevron_down"
+                app:iconGravity="textStart"
+                app:iconPadding="0dp"
+                app:iconSize="28dp"
+                app:iconTint="@color/lw_text_secondary" />
         </LinearLayout>
 
-        <!-- Square artwork card -->
-        <androidx.constraintlayout.widget.ConstraintLayout
+        <!-- Stage: waveform, spinner, transcript box, sent check or setup message -->
+        <FrameLayout
+            android:id="@+id/stageArea"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp">
-
-            <FrameLayout
-                android:id="@+id/artworkCard"
-                android:layout_width="0dp"
-                android:layout_height="0dp"
-                android:background="@drawable/bg_artwork"
-                app:layout_constraintDimensionRatio="1:1"
-                app:layout_constraintEnd_toEndOf="parent"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toTopOf="parent"
-                app:layout_constraintWidth_max="360dp">
+            android:layout_marginTop="12dp"
+            android:minHeight="112dp">
 
                 <me.Integer.localwhisper.WaveformView
                     android:id="@+id/waveformView"
                     android:layout_width="match_parent"
-                    android:layout_height="160dp"
+                    android:layout_height="104dp"
                     android:layout_gravity="center"
-                    android:paddingStart="20dp"
-                    android:paddingEnd="20dp"
                     android:visibility="gone" />
 
                 <com.google.android.material.progressindicator.CircularProgressIndicator
@@ -99,8 +128,8 @@
 
                 <ImageView
                     android:id="@+id/sentCheckIcon"
-                    android:layout_width="96dp"
-                    android:layout_height="96dp"
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
                     android:layout_gravity="center"
                     android:contentDescription="@string/assistant_state_sent"
                     android:src="@drawable/ic_check_circle"
@@ -110,17 +139,19 @@
                 <EditText
                     android:id="@+id/transcriptInput"
                     android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:background="@null"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_info_panel"
+                    android:maxLines="6"
+                    android:minLines="3"
                     android:gravity="top|start"
                     android:hint="@string/assistant_transcript_hint"
                     android:importantForAutofill="no"
                     android:inputType="textMultiLine|textCapSentences"
                     android:lineSpacingMultiplier="1.2"
-                    android:padding="24dp"
+                    android:padding="14dp"
                     android:textColor="@color/lw_text_primary"
                     android:textColorHint="@color/lw_text_secondary"
-                    android:textSize="18sp"
+                    android:textSize="16sp"
                     android:visibility="gone" />
 
                 <LinearLayout
@@ -152,54 +183,23 @@
                         android:text="@string/assistant_open_settings"
                         app:cornerRadius="26dp" />
                 </LinearLayout>
-            </FrameLayout>
-        </androidx.constraintlayout.widget.ConstraintLayout>
-
-        <!-- Title and subtitle -->
-        <TextView
-            android:id="@+id/stateLabel"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="28dp"
-            android:gravity="center"
-            android:singleLine="true"
-            android:text="@string/assistant_state_listening"
-            android:textColor="@color/lw_text_primary"
-            android:textSize="26sp" />
-
-        <TextView
-            android:id="@+id/targetPcText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:background="?attr/selectableItemBackground"
-            android:gravity="center"
-            android:padding="6dp"
-            android:textColor="@color/lw_text_secondary"
-            android:textSize="16sp" />
+        </FrameLayout>
 
         <TextView
             android:id="@+id/errorBanner"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:gravity="center"
+            android:layout_marginTop="8dp"
             android:textColor="@color/lw_error"
             android:textSize="13sp"
             android:visibility="gone" />
-
-        <!-- Pushes the controls to the bottom when there is spare height -->
-        <Space
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:minHeight="24dp" />
 
         <!-- AHK key chips (review only) -->
         <HorizontalScrollView
             android:id="@+id/chipScroll"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
             android:scrollbars="none"
             android:visibility="gone">
 
@@ -216,6 +216,7 @@
             android:id="@+id/progressSection"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
             android:orientation="vertical"
             android:visibility="gone">
 
@@ -279,8 +280,8 @@
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/controlLeft"
                     style="?attr/materialIconButtonStyle"
-                    android:layout_width="64dp"
-                    android:layout_height="64dp"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
                     android:layout_gravity="center"
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
@@ -290,7 +291,7 @@
                     app:icon="@drawable/ic_close"
                     app:iconGravity="textStart"
                     app:iconPadding="0dp"
-                    app:iconSize="30dp"
+                    app:iconSize="26dp"
                     app:iconTint="@color/lw_text_primary" />
             </FrameLayout>
 
@@ -302,8 +303,8 @@
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/controlCenter"
                     style="?attr/materialIconButtonStyle"
-                    android:layout_width="96dp"
-                    android:layout_height="96dp"
+                    android:layout_width="64dp"
+                    android:layout_height="64dp"
                     android:layout_gravity="center"
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
@@ -313,7 +314,7 @@
                     app:icon="@drawable/ic_stop"
                     app:iconGravity="textStart"
                     app:iconPadding="0dp"
-                    app:iconSize="60dp"
+                    app:iconSize="40dp"
                     app:iconTint="@color/lw_text_primary" />
             </FrameLayout>
 
@@ -325,8 +326,8 @@
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/controlRight"
                     style="?attr/materialIconButtonStyle"
-                    android:layout_width="64dp"
-                    android:layout_height="64dp"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
                     android:layout_gravity="center"
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
@@ -336,10 +337,11 @@
                     app:icon="@drawable/ic_restart"
                     app:iconGravity="textStart"
                     app:iconPadding="0dp"
-                    app:iconSize="30dp"
+                    app:iconSize="26dp"
                     app:iconTint="@color/lw_text_primary" />
             </FrameLayout>
         </LinearLayout>
 
-    </LinearLayout>
-</ScrollView>
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+</FrameLayout>

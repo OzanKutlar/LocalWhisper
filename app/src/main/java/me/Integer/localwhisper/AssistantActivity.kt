@@ -12,6 +12,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.View
+import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.Toast
@@ -98,22 +99,21 @@ class AssistantActivity : AppCompatActivity() {
     // ------------------------------------------------------------ Setup
 
     private fun applyWindowInsets() {
-        val baseTop = dpToPx(8)
-        val baseBottom = dpToPx(16)
-        ViewCompat.setOnApplyWindowInsetsListener(binding.playerRoot) { view, insets ->
+        val baseMargin = dpToPx(12)
+        ViewCompat.setOnApplyWindowInsetsListener(binding.overlayScrim) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-            view.setPadding(
-                bars.left,
-                baseTop + bars.top,
-                bars.right,
-                baseBottom + maxOf(bars.bottom, ime.bottom)
-            )
+            val params = binding.sheetCard.layoutParams as ViewGroup.MarginLayoutParams
+            params.marginStart = baseMargin + bars.left
+            params.marginEnd = baseMargin + bars.right
+            params.bottomMargin = baseMargin + maxOf(bars.bottom, ime.bottom)
+            binding.sheetCard.layoutParams = params
             insets
         }
     }
 
     private fun setupStaticListeners() {
+        binding.overlayScrim.setOnClickListener { dismissOverlay() }
         binding.closeButton.setOnClickListener { dismissOverlay() }
         binding.openSettingsButton.setOnClickListener { openMainScreen() }
         binding.openMainButton.setOnClickListener { openMainScreen() }
@@ -156,12 +156,12 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun animateContentIn() {
-        binding.playerContent.alpha = 0f
-        binding.playerContent.translationY = dpToPx(24).toFloat()
-        binding.playerContent.animate()
+        binding.sheetCard.alpha = 0f
+        binding.sheetCard.translationY = dpToPx(96).toFloat()
+        binding.sheetCard.animate()
             .alpha(1f)
             .translationY(0f)
-            .setDuration(220L)
+            .setDuration(260L)
             .setInterpolator(DecelerateInterpolator(2.0f))
             .start()
     }
@@ -519,10 +519,10 @@ class AssistantActivity : AppCompatActivity() {
         clientsJob?.cancel()
         recorder?.cancel()
         recorder = null
-        binding.playerContent.animate()
+        binding.sheetCard.animate()
             .alpha(0f)
-            .translationY(dpToPx(24).toFloat())
-            .setDuration(160L)
+            .translationY((binding.sheetCard.height + dpToPx(24)).toFloat())
+            .setDuration(200L)
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {
                 finish()
