@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="lw_bg">#0B0D14</color>
+    <color name="lw_card_bg">#151824</color>
+    <color name="lw_card_elevated">#1D2234</color>
+    <color name="lw_card_stroke">#38818CF8</color>
+    <color name="lw_text_primary">#F3F5FC</color>
+    <color name="lw_text_secondary">#98A1BD</color>
+    <color name="lw_accent">#7C7BFF</color>
+    <color name="lw_accent_on">#0B0D1E</color>
+    <color name="lw_accent_container">#262B4D</color>
+    <color name="lw_accent_on_container">#DCE0FF</color>
+    <color name="lw_record_coral">#FB4F6C</color>
+    <color name="lw_record_coral_soft">#30FB4F6C</color>
+    <color name="lw_success">#34D399</color>
+    <color name="lw_success_soft">#2634D399</color>
+    <color name="lw_error">#F87171</color>
+    <color name="lw_error_soft">#26F87171</color>
+    <color name="lw_pill_bg">#20253A</color>
+    <color name="lw_handle">#3D4566</color>
+    <color name="lw_wave_start">#22D3EE</color>
+    <color name="lw_wave_mid">#818CF8</color>
+    <color name="lw_wave_end">#C084FC</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

@@ -4,28 +4,35 @@
     <string name="main_subtitle">Local CUDA voice-to-keystroke assistant</string>
     <string name="section_server">Server PC Connection</string>
     <string name="section_setup">Permissions &amp; Assistant</string>
-    <string name="hint_server_host">Server IP or Hostname (e.g. 192.168.1.50)</string>
-    <string name="hint_server_port">Port (default 8765)</string>
+    <string name="hint_server_host_short">Server IP / Host</string>
+    <string name="hint_server_port_short">Port</string>
     <string name="hint_language">Language hint (blank = Auto-detect)</string>
     <string name="save_and_test">Save &amp; Test Connection</string>
-    <string name="testing_connection">Testing connection…</string>
-    <string name="connection_not_tested">Not tested yet. Enter your Server PC IP and tap Save &amp; Test.</string>
-    <string name="invalid_server_config">Please enter a valid server host and port (1-65535).</string>
+    <string name="testing_connection">Connecting to server…</string>
+    <string name="connection_not_tested">Enter your Server PC IP and tap Save &amp; Test to verify CUDA and connected PCs.</string>
+    <string name="invalid_server_config">Please enter a valid server host and port (1–65535).</string>
+    <string name="status_pill_untested">Not tested</string>
+    <string name="status_pill_checking">Checking…</string>
+    <string name="status_pill_connected">Connected</string>
+    <string name="status_pill_offline">Offline</string>
     <string name="grant_mic_permission">Grant Microphone Permission</string>
-    <string name="mic_permission_granted">Microphone permission: Granted</string>
-    <string name="mic_permission_missing">Microphone permission: Required for recording</string>
+    <string name="mic_permission_granted">Microphone permission granted</string>
+    <string name="mic_permission_missing">Microphone permission required</string>
     <string name="mic_permission_already_granted">Microphone permission already granted</string>
     <string name="mic_permission_denied">Microphone permission denied</string>
     <string name="set_default_assistant">Set as Default Digital Assistant</string>
     <string name="launch_voice_overlay">Launch Voice Overlay</string>
 
-    <string name="assistant_state_listening">Listening…</string>
-    <string name="assistant_state_transcribing">Transcribing on CUDA…</string>
+    <string name="assistant_state_listening">Listening</string>
+    <string name="assistant_state_transcribing">Transcribing</string>
     <string name="assistant_state_review">Review &amp; Edit</string>
-    <string name="assistant_state_sending">Sending to PC…</string>
-    <string name="assistant_state_error">Error</string>
-    <string name="assistant_stop_transcribe">Stop &amp; Transcribe</string>
+    <string name="assistant_state_sending">Sending…</string>
+    <string name="assistant_state_sent">Sent</string>
+    <string name="assistant_state_error">Setup needed</string>
+    <string name="assistant_tap_to_stop">Tap to stop &amp; transcribe</string>
+    <string name="assistant_model_hint">Running Qwen3-ASR-1.7B on CUDA…</string>
     <string name="assistant_cancel">Cancel</string>
+    <string name="assistant_stop_desc">Stop and transcribe</string>
     <string name="assistant_rerecord">Re-record</string>
     <string name="assistant_send_to_pc">Send to PC</string>
     <string name="assistant_transcript_hint">Transcript (supports AHK keys like {Enter})</string>
@@ -34,6 +41,6 @@
     <string name="assistant_open_settings">Open LocalWhisper</string>
     <string name="assistant_mic_required">Microphone permission is required. Open LocalWhisper to grant it.</string>
     <string name="assistant_empty_transcript">Enter or dictate some text before sending.</string>
-    <string name="assistant_sent_toast">Sent to %1$s</string>
+    <string name="assistant_sent_message">Sent to %1$s</string>
     <string name="assistant_close_desc">Close</string>
 </resources>

@@ -12,28 +12,57 @@
         android:layout_gravity="bottom"
         android:layout_marginStart="12dp"
         android:layout_marginEnd="12dp"
-        android:layout_marginBottom="16dp"
+        android:layout_marginBottom="14dp"
         android:clickable="true"
         android:focusable="true"
-        app:cardCornerRadius="24dp"
-        app:cardElevation="10dp"
-        app:strokeWidth="0dp">
+        app:cardBackgroundColor="@color/lw_card_bg"
+        app:cardCornerRadius="28dp"
+        app:cardElevation="16dp"
+        app:strokeColor="@color/lw_card_stroke"
+        app:strokeWidth="1dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="20dp">
+            android:paddingStart="20dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="20dp">
 
+            <!-- Top Drag Handle -->
+            <View
+                android:layout_width="36dp"
+                android:layout_height="4dp"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginBottom="14dp"
+                android:background="@drawable/bg_drag_handle" />
+
+            <!-- Header Row -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
+                <FrameLayout
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:background="@drawable/bg_hero_mic_badge">
+
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:layout_gravity="center"
+                        android:contentDescription="@string/app_name"
+                        android:src="@drawable/ic_mic"
+                        app:tint="@color/white" />
+                </FrameLayout>
+
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
                     android:layout_weight="1"
                     android:orientation="vertical">
 
@@ -42,32 +71,68 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="@string/app_name"
-                        android:textAppearance="?attr/textAppearanceTitleMedium"
+                        android:textColor="@color/lw_text_primary"
+                        android:textSize="16sp"
                         android:textStyle="bold" />
 
-                    <TextView
-                        android:id="@+id/stateLabel"
+                    <LinearLayout
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="@string/assistant_state_listening"
-                        android:textAppearance="?attr/textAppearanceBodySmall" />
+                        android:layout_marginTop="3dp"
+                        android:background="@drawable/bg_status_pill"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingStart="8dp"
+                        android:paddingTop="2dp"
+                        android:paddingEnd="10dp"
+                        android:paddingBottom="2dp">
+
+                        <View
+                            android:id="@+id/statusDot"
+                            android:layout_width="7dp"
+                            android:layout_height="7dp"
+                            android:background="@drawable/bg_status_dot" />
+
+                        <TextView
+                            android:id="@+id/stateLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:text="@string/assistant_state_listening"
+                            android:textColor="@color/lw_text_secondary"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
                 </LinearLayout>
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/closeButton"
                     style="?attr/materialIconButtonStyle"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
                     android:contentDescription="@string/assistant_close_desc"
-                    android:text="✕" />
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    app:icon="@drawable/ic_close"
+                    app:iconGravity="textStart"
+                    app:iconPadding="0dp"
+                    app:iconSize="20dp"
+                    app:iconTint="@color/lw_text_secondary" />
             </LinearLayout>
 
+            <!-- Error Banner -->
             <TextView
                 android:id="@+id/errorBanner"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"
-                android:textColor="?attr/colorError"
+                android:background="@drawable/bg_error_banner"
+                android:paddingStart="12dp"
+                android:paddingTop="10dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="10dp"
+                android:textColor="@color/lw_error"
+                android:textSize="13sp"
                 android:visibility="gone" />
 
             <!-- Permission / Configuration Missing Section -->
@@ -84,14 +149,16 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="@string/assistant_mic_required"
-                    android:textAppearance="?attr/textAppearanceBodyMedium" />
+                    android:textColor="@color/lw_text_secondary"
+                    android:textSize="14sp" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/openMainButton"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
+                    android:layout_height="50dp"
                     android:layout_marginTop="16dp"
-                    android:text="@string/assistant_open_settings" />
+                    android:text="@string/assistant_open_settings"
+                    app:cornerRadius="16dp" />
             </LinearLayout>
 
             <!-- Recording Section -->
@@ -107,42 +174,88 @@
                 <me.Integer.localwhisper.WaveformView
                     android:id="@+id/waveformView"
                     android:layout_width="match_parent"
-                    android:layout_height="84dp"
-                    android:paddingTop="8dp"
-                    android:paddingBottom="8dp" />
+                    android:layout_height="92dp"
+                    android:paddingTop="6dp"
+                    android:paddingBottom="6dp" />
 
                 <TextView
                     android:id="@+id/timerText"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/bg_status_pill"
                     android:fontFamily="monospace"
+                    android:paddingStart="14dp"
+                    android:paddingTop="4dp"
+                    android:paddingEnd="14dp"
+                    android:paddingBottom="4dp"
                     android:text="00:00"
-                    android:textAppearance="?attr/textAppearanceTitleMedium" />
+                    android:textColor="@color/lw_text_primary"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
+                    android:layout_marginTop="18dp"
+                    android:gravity="center"
                     android:orientation="horizontal">
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/cancelRecordingButton"
                         style="?attr/materialButtonOutlinedStyle"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginEnd="8dp"
-                        android:layout_weight="1"
-                        android:text="@string/assistant_cancel" />
+                        android:layout_width="50dp"
+                        android:layout_height="50dp"
+                        android:contentDescription="@string/assistant_cancel"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:padding="0dp"
+                        app:cornerRadius="25dp"
+                        app:icon="@drawable/ic_close"
+                        app:iconGravity="textStart"
+                        app:iconPadding="0dp"
+                        app:iconSize="20dp"
+                        app:iconTint="@color/lw_text_secondary"
+                        app:strokeColor="@color/lw_card_stroke" />
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/stopAndTranscribeButton"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
-                        android:layout_weight="1.4"
-                        android:text="@string/assistant_stop_transcribe" />
+                    <FrameLayout
+                        android:layout_width="78dp"
+                        android:layout_height="78dp"
+                        android:layout_marginStart="24dp"
+                        android:layout_marginEnd="24dp"
+                        android:background="@drawable/bg_stop_ring">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/stopAndTranscribeButton"
+                            android:layout_width="60dp"
+                            android:layout_height="60dp"
+                            android:layout_gravity="center"
+                            android:contentDescription="@string/assistant_stop_desc"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:padding="0dp"
+                            app:backgroundTint="@color/lw_record_coral"
+                            app:cornerRadius="30dp"
+                            app:icon="@drawable/ic_stop"
+                            app:iconGravity="textStart"
+                            app:iconPadding="0dp"
+                            app:iconSize="26dp"
+                            app:iconTint="@color/white" />
+                    </FrameLayout>
+
+                    <!-- Visual symmetry spacer -->
+                    <View
+                        android:layout_width="50dp"
+                        android:layout_height="50dp" />
                 </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/assistant_tap_to_stop"
+                    android:textColor="@color/lw_text_secondary"
+                    android:textSize="12sp" />
             </LinearLayout>
 
             <!-- Transcribing Section -->
@@ -150,30 +263,37 @@
                 android:id="@+id/transcribingSection"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="20dp"
+                android:layout_marginTop="24dp"
                 android:gravity="center_horizontal"
                 android:orientation="vertical"
                 android:visibility="gone">
 
-                <com.google.android.material.progressindicator.LinearProgressIndicator
-                    android:layout_width="match_parent"
+                <com.google.android.material.progressindicator.CircularProgressIndicator
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:indeterminate="true" />
+                    android:indeterminate="true"
+                    app:indicatorColor="@color/lw_accent"
+                    app:indicatorSize="48dp"
+                    app:trackCornerRadius="4dp"
+                    app:trackThickness="4dp" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:text="@string/assistant_state_transcribing"
-                    android:textAppearance="?attr/textAppearanceBodyMedium" />
+                    android:layout_marginTop="16dp"
+                    android:text="@string/assistant_model_hint"
+                    android:textColor="@color/lw_text_primary"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/cancelTranscribeButton"
-                    style="?attr/materialButtonOutlinedStyle"
+                    style="?attr/borderlessButtonStyle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:text="@string/assistant_cancel" />
+                    android:layout_marginTop="10dp"
+                    android:text="@string/assistant_cancel"
+                    android:textColor="@color/lw_text_secondary" />
             </LinearLayout>
 
             <!-- Review & Edit Section -->
@@ -189,7 +309,13 @@
                     style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:hint="@string/assistant_transcript_hint">
+                    android:hint="@string/assistant_transcript_hint"
+                    app:boxBackgroundColor="@color/lw_card_elevated"
+                    app:boxCornerRadiusBottomEnd="16dp"
+                    app:boxCornerRadiusBottomStart="16dp"
+                    app:boxCornerRadiusTopEnd="16dp"
+                    app:boxCornerRadiusTopStart="16dp"
+                    app:boxStrokeColor="@color/lw_accent">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/transcriptInput"
@@ -197,20 +323,24 @@
                         android:layout_height="wrap_content"
                         android:gravity="top|start"
                         android:inputType="textMultiLine|textCapSentences"
+                        android:lineSpacingMultiplier="1.2"
                         android:maxLines="6"
-                        android:minLines="3" />
+                        android:minLines="3"
+                        android:textColor="@color/lw_text_primary"
+                        android:textSize="16sp" />
                 </com.google.android.material.textfield.TextInputLayout>
 
                 <HorizontalScrollView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="10dp"
                     android:scrollbars="none">
 
                     <com.google.android.material.chip.ChipGroup
                         android:id="@+id/ahkChipGroup"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        app:chipSpacingHorizontal="6dp"
                         app:singleLine="true" />
                 </HorizontalScrollView>
 
@@ -220,38 +350,86 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
-                    android:hint="@string/assistant_target_pc_hint">
+                    android:hint="@string/assistant_target_pc_hint"
+                    app:boxCornerRadiusBottomEnd="14dp"
+                    app:boxCornerRadiusBottomStart="14dp"
+                    app:boxCornerRadiusTopEnd="14dp"
+                    app:boxCornerRadiusTopStart="14dp"
+                    app:startIconDrawable="@drawable/ic_pc"
+                    app:startIconTint="@color/lw_text_secondary">
 
                     <com.google.android.material.textfield.MaterialAutoCompleteTextView
                         android:id="@+id/targetPcDropdown"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="none" />
+                        android:inputType="none"
+                        android:textColor="@color/lw_text_primary"
+                        android:textSize="14sp" />
                 </com.google.android.material.textfield.TextInputLayout>
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
+                    android:layout_marginTop="16dp"
                     android:orientation="horizontal">
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/rerecordButton"
                         style="?attr/materialButtonOutlinedStyle"
                         android:layout_width="0dp"
-                        android:layout_height="wrap_content"
+                        android:layout_height="50dp"
                         android:layout_marginEnd="8dp"
                         android:layout_weight="1"
-                        android:text="@string/assistant_rerecord" />
+                        android:text="@string/assistant_rerecord"
+                        android:textColor="@color/lw_text_primary"
+                        app:cornerRadius="16dp"
+                        app:icon="@drawable/ic_refresh"
+                        app:iconGravity="textStart"
+                        app:iconSize="18dp"
+                        app:iconTint="@color/lw_text_primary"
+                        app:strokeColor="@color/lw_card_stroke" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/sendToPcButton"
                         android:layout_width="0dp"
-                        android:layout_height="wrap_content"
+                        android:layout_height="50dp"
                         android:layout_marginStart="8dp"
-                        android:layout_weight="1.4"
-                        android:text="@string/assistant_send_to_pc" />
+                        android:layout_weight="1.35"
+                        android:text="@string/assistant_send_to_pc"
+                        app:cornerRadius="16dp"
+                        app:icon="@drawable/ic_send"
+                        app:iconGravity="textStart"
+                        app:iconSize="18dp" />
                 </LinearLayout>
+            </LinearLayout>
+
+            <!-- Sent Confirmation Section -->
+            <LinearLayout
+                android:id="@+id/sentSection"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:layout_marginBottom="8dp"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <ImageView
+                    android:id="@+id/sentCheckIcon"
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
+                    android:contentDescription="@string/assistant_state_sent"
+                    android:src="@drawable/ic_check_circle"
+                    app:tint="@color/lw_success" />
+
+                <TextView
+                    android:id="@+id/sentMessageText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:textColor="@color/lw_text_primary"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
             </LinearLayout>
 
         </LinearLayout>

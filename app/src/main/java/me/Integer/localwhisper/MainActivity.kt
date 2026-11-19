@@ -3,12 +3,15 @@ package me.Integer.localwhisper
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import me.Integer.localwhisper.databinding.ActivityMainBinding
@@ -25,14 +28,31 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         prefs = ServerPreferences(this)
 
+        applyWindowInsets()
         populateSavedSettings()
         setupViews()
         updatePermissionStatus()
+        updateConnectionPill(getString(R.string.status_pill_untested), R.color.lw_text_secondary)
     }
 
     override fun onResume() {
         super.onResume()
         updatePermissionStatus()
+    }
+
+    private fun applyWindowInsets() {
+        val basePadding = dpToPx(20)
+        val baseBottom = dpToPx(28)
+        ViewCompat.setOnApplyWindowInsetsListener(binding.rootScroll) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            binding.contentContainer.setPadding(
+                basePadding,
+                basePadding + bars.top,
+                basePadding,
+                baseBottom + bars.bottom
+            )
+            insets
+        }
     }
 
     private fun populateSavedSettings() {
@@ -53,6 +73,7 @@ class MainActivity : AppCompatActivity() {
         val port = binding.serverPortInput.text?.toString()?.trim()?.toIntOrNull()
         if (host.isEmpty() || port == null || port !in 1..65535) {
             binding.connectionStatusText.text = getString(R.string.invalid_server_config)
+            updateConnectionPill(getString(R.string.status_pill_offline), R.color.lw_error)
             return
         }
 
@@ -63,17 +84,26 @@ class MainActivity : AppCompatActivity() {
         val baseUrl = prefs.buildBaseUrl() ?: return
         binding.saveAndTestButton.isEnabled = false
         binding.connectionStatusText.text = getString(R.string.testing_connection)
+        updateConnectionPill(getString(R.string.status_pill_checking), R.color.lw_accent)
 
         lifecycleScope.launch {
             val result = api.checkHealth(baseUrl)
             binding.saveAndTestButton.isEnabled = true
             result.onSuccess { health ->
                 binding.connectionStatusText.text = formatHealthSummary(health)
+                updateConnectionPill(getString(R.string.status_pill_connected), R.color.lw_success)
             }.onFailure { exc ->
                 binding.connectionStatusText.text =
                     "Connection failed: ${exc.message ?: "Unable to reach $baseUrl"}"
+                updateConnectionPill(getString(R.string.status_pill_offline), R.color.lw_error)
             }
         }
+    }
+
+    private fun updateConnectionPill(label: String, dotColorRes: Int) {
+        binding.connectionPillText.text = label
+        binding.connectionDot.backgroundTintList =
+            ColorStateList.valueOf(ContextCompat.getColor(this, dotColorRes))
     }
 
     private fun formatHealthSummary(health: HealthResponse): String {
@@ -83,9 +113,8 @@ class MainActivity : AppCompatActivity() {
             health.clients.joinToString(", ") { it.name }
         }
         return buildString {
-            appendLine("Connected (${health.status})")
+            appendLine("GPU: ${health.gpuName} (${health.device})")
             appendLine("Model: ${health.model}")
-            appendLine("GPU: ${health.gpuName} [${health.device}]")
             append("PC Clients: $clientNames")
         }
     }
@@ -157,7 +186,19 @@ class MainActivity : AppCompatActivity() {
         } else {
             getString(R.string.mic_permission_missing)
         }
+        binding.micStatusIcon.setImageResource(
+            if (granted) R.drawable.ic_check_circle else R.drawable.ic_mic
+        )
+        val tintColor = ContextCompat.getColor(
+            this,
+            if (granted) R.color.lw_success else R.color.lw_text_secondary
+        )
+        binding.micStatusIcon.imageTintList = ColorStateList.valueOf(tintColor)
         binding.requestPermissionButton.isEnabled = !granted
+    }
+
+    private fun dpToPx(dp: Int): Int {
+        return (dp * resources.displayMetrics.density).toInt()
     }
 
     override fun onRequestPermissionsResult(

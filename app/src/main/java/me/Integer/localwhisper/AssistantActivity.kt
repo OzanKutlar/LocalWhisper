@@ -1,19 +1,29 @@
 package me.Integer.localwhisper
 
 import android.Manifest
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.HapticFeedbackConstants
 import android.view.View
+import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.ArrayAdapter
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.chip.Chip
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.Integer.localwhisper.databinding.ActivityAssistantBinding
 import java.io.File
@@ -21,7 +31,7 @@ import java.util.Locale
 
 class AssistantActivity : AppCompatActivity() {
 
-    private enum class UiState { SETUP_REQUIRED, RECORDING, TRANSCRIBING, REVIEW, SENDING }
+    private enum class UiState { SETUP_REQUIRED, RECORDING, TRANSCRIBING, REVIEW, SENDING, SENT }
 
     private lateinit var binding: ActivityAssistantBinding
     private lateinit var prefs: ServerPreferences
@@ -31,6 +41,8 @@ class AssistantActivity : AppCompatActivity() {
     private var recordingStartMs: Long = 0L
     private var connectedClients: List<PcClientInfo> = emptyList()
     private var selectedClient: PcClientInfo? = null
+    private var dotPulseAnimator: ObjectAnimator? = null
+    private var isDismissing = false
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
@@ -49,16 +61,44 @@ class AssistantActivity : AppCompatActivity() {
         setContentView(binding.root)
         prefs = ServerPreferences(this)
 
+        applySheetWindowInsets()
         setupListeners()
         setupAhkChips()
+        animateSheetIn()
         beginAssistantFlow()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         stopTimer()
+        stopDotPulse()
+        binding.waveformView.setActive(false)
         activeJob?.cancel()
         recorder?.cancel()
+    }
+
+    private fun applySheetWindowInsets() {
+        val baseBottomMargin = dpToPx(14)
+        ViewCompat.setOnApplyWindowInsetsListener(binding.overlayScrim) { _, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime()
+            )
+            val params = binding.sheetCard.layoutParams as ViewGroup.MarginLayoutParams
+            params.bottomMargin = baseBottomMargin + bars.bottom
+            binding.sheetCard.layoutParams = params
+            insets
+        }
+    }
+
+    private fun animateSheetIn() {
+        binding.sheetCard.alpha = 0f
+        binding.sheetCard.translationY = dpToPx(64).toFloat()
+        binding.sheetCard.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(240L)
+            .setInterpolator(DecelerateInterpolator(2.0f))
+            .start()
     }
 
     private fun setupListeners() {
@@ -66,9 +106,18 @@ class AssistantActivity : AppCompatActivity() {
         binding.closeButton.setOnClickListener { dismissOverlay() }
         binding.cancelRecordingButton.setOnClickListener { dismissOverlay() }
         binding.cancelTranscribeButton.setOnClickListener { dismissOverlay() }
-        binding.stopAndTranscribeButton.setOnClickListener { stopAndTranscribe() }
-        binding.rerecordButton.setOnClickListener { startRecording() }
-        binding.sendToPcButton.setOnClickListener { sendTranscriptToPc() }
+        binding.stopAndTranscribeButton.setOnClickListener {
+            performTapHaptic(it)
+            stopAndTranscribe()
+        }
+        binding.rerecordButton.setOnClickListener {
+            performTapHaptic(it)
+            startRecording()
+        }
+        binding.sendToPcButton.setOnClickListener {
+            performTapHaptic(it)
+            sendTranscriptToPc()
+        }
         binding.openMainButton.setOnClickListener {
             startActivity(Intent(this, MainActivity::class.java))
             finish()
@@ -82,11 +131,25 @@ class AssistantActivity : AppCompatActivity() {
 
     private fun setupAhkChips() {
         binding.ahkChipGroup.removeAllViews()
+        val chipBg = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.lw_pill_bg))
+        val chipStroke = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.lw_card_stroke))
+        val chipText = ContextCompat.getColor(this, R.color.lw_text_primary)
+
         for (token in AHK_QUICK_TOKENS) {
             val chip = Chip(this).apply {
                 text = token
+                typeface = Typeface.MONOSPACE
+                textSize = 12f
                 isCheckable = false
-                setOnClickListener { insertTokenAtCursor(token) }
+                chipBackgroundColor = chipBg
+                chipStrokeColor = chipStroke
+                chipStrokeWidth = dpToPx(1).toFloat()
+                setTextColor(chipText)
+                setEnsureMinTouchTargetSize(false)
+                setOnClickListener {
+                    performTapHaptic(it)
+                    insertTokenAtCursor(token)
+                }
             }
             binding.ahkChipGroup.addView(chip)
         }
@@ -137,12 +200,14 @@ class AssistantActivity : AppCompatActivity() {
         recorder = newRecorder
         recordingStartMs = System.currentTimeMillis()
         binding.timerText.text = "00:00"
+        binding.waveformView.setActive(true)
         startTimer()
         setUiState(UiState.RECORDING)
     }
 
     private fun stopAndTranscribe() {
         stopTimer()
+        binding.waveformView.setActive(false)
         val wavFile = recorder?.stop()
         if (wavFile == null || !wavFile.isFile) {
             showError("No audio captured.")
@@ -224,17 +289,27 @@ class AssistantActivity : AppCompatActivity() {
         activeJob = lifecycleScope.launch {
             val result = api.sendKeystrokes(baseUrl, text, selectedClient?.id)
             result.onSuccess { response ->
-                Toast.makeText(
-                    this@AssistantActivity,
-                    getString(R.string.assistant_sent_toast, response.clientName),
-                    Toast.LENGTH_SHORT
-                ).show()
-                finish()
+                showSentAndDismiss(response.clientName)
             }.onFailure { exc ->
                 showError(exc.message ?: "Failed to send keystrokes")
                 setUiState(UiState.REVIEW)
             }
         }
+    }
+
+    private suspend fun showSentAndDismiss(clientName: String) {
+        binding.sentMessageText.text = getString(R.string.assistant_sent_message, clientName)
+        setUiState(UiState.SENT)
+        binding.sentCheckIcon.scaleX = 0.4f
+        binding.sentCheckIcon.scaleY = 0.4f
+        binding.sentCheckIcon.animate()
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(240L)
+            .setInterpolator(OvershootInterpolator(2.0f))
+            .start()
+        delay(520L)
+        dismissOverlay()
     }
 
     private fun setUiState(state: UiState) {
@@ -246,6 +321,8 @@ class AssistantActivity : AppCompatActivity() {
             if (state == UiState.TRANSCRIBING) View.VISIBLE else View.GONE
         binding.reviewSection.visibility =
             if (state == UiState.REVIEW || state == UiState.SENDING) View.VISIBLE else View.GONE
+        binding.sentSection.visibility =
+            if (state == UiState.SENT) View.VISIBLE else View.GONE
 
         val isSending = state == UiState.SENDING
         binding.sendToPcButton.isEnabled = !isSending
@@ -258,7 +335,38 @@ class AssistantActivity : AppCompatActivity() {
             UiState.TRANSCRIBING -> getString(R.string.assistant_state_transcribing)
             UiState.REVIEW -> getString(R.string.assistant_state_review)
             UiState.SENDING -> getString(R.string.assistant_state_sending)
+            UiState.SENT -> getString(R.string.assistant_state_sent)
         }
+
+        val dotColorRes = when (state) {
+            UiState.RECORDING -> R.color.lw_record_coral
+            UiState.TRANSCRIBING, UiState.SENDING -> R.color.lw_accent
+            UiState.REVIEW, UiState.SENT -> R.color.lw_success
+            UiState.SETUP_REQUIRED -> R.color.lw_error
+        }
+        binding.statusDot.backgroundTintList =
+            ColorStateList.valueOf(ContextCompat.getColor(this, dotColorRes))
+
+        val shouldPulse = state == UiState.RECORDING ||
+            state == UiState.TRANSCRIBING ||
+            state == UiState.SENDING
+        if (shouldPulse) startDotPulse() else stopDotPulse()
+    }
+
+    private fun startDotPulse() {
+        if (dotPulseAnimator?.isRunning == true) return
+        dotPulseAnimator = ObjectAnimator.ofFloat(binding.statusDot, View.ALPHA, 1f, 0.25f).apply {
+            duration = 650L
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            start()
+        }
+    }
+
+    private fun stopDotPulse() {
+        dotPulseAnimator?.cancel()
+        dotPulseAnimator = null
+        binding.statusDot.alpha = 1f
     }
 
     private fun showSetupRequired(message: String) {
@@ -286,10 +394,32 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun dismissOverlay() {
+        if (isDismissing) return
+        isDismissing = true
         stopTimer()
+        stopDotPulse()
+        binding.waveformView.setActive(false)
         activeJob?.cancel()
         recorder?.cancel()
-        finish()
+        binding.sheetCard.animate()
+            .alpha(0f)
+            .translationY(dpToPx(64).toFloat())
+            .setDuration(170L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                finish()
+                @Suppress("DEPRECATION")
+                overridePendingTransition(0, 0)
+            }
+            .start()
+    }
+
+    private fun performTapHaptic(view: View) {
+        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+
+    private fun dpToPx(dp: Int): Int {
+        return (dp * resources.displayMetrics.density).toInt()
     }
 
     private fun hasRecordAudioPermission(): Boolean {
