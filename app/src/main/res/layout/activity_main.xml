@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/rootScroll"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -13,329 +12,167 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingStart="20dp"
-        android:paddingTop="20dp"
-        android:paddingEnd="20dp"
-        android:paddingBottom="28dp">
+        android:paddingStart="12dp"
+        android:paddingTop="24dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="24dp">
 
-        <!-- Hero Header -->
-        <LinearLayout
-            android:layout_width="match_parent"
+        <!-- Title -->
+        <TextView
+            android:id="@+id/titleText"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="24dp"
+            android:text="@string/app_name"
+            android:textColor="@color/lw_text_primary"
+            android:textSize="28sp"
+            android:textStyle="bold" />
 
-            <FrameLayout
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:background="@drawable/bg_hero_mic_badge">
+        <TextView
+            android:id="@+id/connectionStatusLine"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="8dp"
+            android:text="@string/main_status_untested"
+            android:textColor="@color/lw_text_secondary"
+            android:textSize="15sp" />
 
-                <ImageView
-                    android:layout_width="26dp"
-                    android:layout_height="26dp"
-                    android:layout_gravity="center"
-                    android:contentDescription="@string/app_name"
-                    android:src="@drawable/ic_mic"
-                    app:tint="@color/white" />
-            </FrameLayout>
+        <!-- Server section -->
+        <TextView
+            style="@style/Widget.LocalWhisper.SectionHeader"
+            android:text="@string/section_server" />
+
+        <com.google.android.material.card.MaterialCardView style="@style/Widget.LocalWhisper.GroupCard">
 
             <LinearLayout
-                android:layout_width="0dp"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="14dp"
-                android:layout_weight="1"
                 android:orientation="vertical">
 
-                <TextView
-                    android:id="@+id/titleText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/app_name"
-                    android:textColor="@color/lw_text_primary"
-                    android:textSize="22sp"
-                    android:textStyle="bold" />
+                <LinearLayout
+                    android:id="@+id/serverAddressRow"
+                    style="@style/Widget.LocalWhisper.Row">
 
-                <TextView
-                    android:id="@+id/subtitleText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/main_subtitle"
-                    android:textColor="@color/lw_text_secondary"
-                    android:textSize="13sp" />
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_server_address" />
+
+                    <TextView
+                        android:id="@+id/serverAddressValue"
+                        style="@style/Widget.LocalWhisper.RowValue" />
+                </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
+                    android:id="@+id/languageRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_language" />
+
+                    <TextView
+                        android:id="@+id/languageValue"
+                        style="@style/Widget.LocalWhisper.RowValue" />
+                </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
+                    android:id="@+id/testConnectionRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_test_connection" />
+
+                    <TextView
+                        android:id="@+id/testConnectionSubtitle"
+                        style="@style/Widget.LocalWhisper.RowSummary"
+                        android:text="@string/row_test_connection_hint" />
+                </LinearLayout>
             </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
 
-            <LinearLayout
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:background="@drawable/bg_status_pill"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:paddingStart="10dp"
-                android:paddingTop="5dp"
-                android:paddingEnd="12dp"
-                android:paddingBottom="5dp">
+        <!-- Assistant section -->
+        <TextView
+            style="@style/Widget.LocalWhisper.SectionHeader"
+            android:text="@string/section_assistant" />
 
-                <View
-                    android:id="@+id/connectionDot"
-                    android:layout_width="8dp"
-                    android:layout_height="8dp"
-                    android:background="@drawable/bg_status_dot" />
-
-                <TextView
-                    android:id="@+id/connectionPillText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="6dp"
-                    android:text="@string/status_pill_untested"
-                    android:textColor="@color/lw_text_secondary"
-                    android:textSize="12sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-        </LinearLayout>
-
-        <!-- Server Connection Card -->
-        <com.google.android.material.card.MaterialCardView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="22dp"
-            app:cardBackgroundColor="@color/lw_card_bg"
-            app:cardCornerRadius="22dp"
-            app:cardElevation="0dp"
-            app:strokeColor="@color/lw_card_stroke"
-            app:strokeWidth="1dp">
+        <com.google.android.material.card.MaterialCardView style="@style/Widget.LocalWhisper.GroupCard">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="18dp">
+                android:orientation="vertical">
 
                 <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
+                    android:id="@+id/micPermissionRow"
+                    style="@style/Widget.LocalWhisper.Row"
                     android:orientation="horizontal">
 
-                    <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:contentDescription="@string/section_server"
-                        android:src="@drawable/ic_server"
-                        app:tint="@color/lw_accent" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="10dp"
-                        android:text="@string/section_server"
-                        android:textColor="@color/lw_text_primary"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <!-- Side-by-side Host & Port -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:orientation="horizontal">
-
-                    <com.google.android.material.textfield.TextInputLayout
-                        style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginEnd="8dp"
-                        android:layout_weight="2.3"
-                        android:hint="@string/hint_server_host_short"
-                        app:boxCornerRadiusBottomEnd="14dp"
-                        app:boxCornerRadiusBottomStart="14dp"
-                        app:boxCornerRadiusTopEnd="14dp"
-                        app:boxCornerRadiusTopStart="14dp">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/serverHostInput"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:inputType="textUri"
-                            android:singleLine="true"
-                            android:textColor="@color/lw_text_primary"
-                            android:textSize="15sp" />
-                    </com.google.android.material.textfield.TextInputLayout>
-
-                    <com.google.android.material.textfield.TextInputLayout
-                        style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                    <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:hint="@string/hint_server_port_short"
-                        app:boxCornerRadiusBottomEnd="14dp"
-                        app:boxCornerRadiusBottomStart="14dp"
-                        app:boxCornerRadiusTopEnd="14dp"
-                        app:boxCornerRadiusTopStart="14dp">
+                        android:orientation="vertical">
 
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/serverPortInput"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:inputType="number"
-                            android:singleLine="true"
-                            android:textColor="@color/lw_text_primary"
-                            android:textSize="15sp" />
-                    </com.google.android.material.textfield.TextInputLayout>
-                </LinearLayout>
+                        <TextView
+                            style="@style/Widget.LocalWhisper.RowTitle"
+                            android:text="@string/row_mic_permission" />
 
-                <com.google.android.material.textfield.TextInputLayout
-                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:hint="@string/hint_language"
-                    app:boxCornerRadiusBottomEnd="14dp"
-                    app:boxCornerRadiusBottomStart="14dp"
-                    app:boxCornerRadiusTopEnd="14dp"
-                    app:boxCornerRadiusTopStart="14dp">
+                        <TextView
+                            android:id="@+id/micPermissionSubtitle"
+                            style="@style/Widget.LocalWhisper.RowSummary"
+                            android:text="@string/mic_permission_missing" />
+                    </LinearLayout>
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/languageInput"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="text"
-                        android:singleLine="true"
-                        android:textColor="@color/lw_text_primary"
-                        android:textSize="15sp" />
-                </com.google.android.material.textfield.TextInputLayout>
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/saveAndTestButton"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="14dp"
-                    android:text="@string/save_and_test"
-                    app:cornerRadius="14dp" />
-
-                <TextView
-                    android:id="@+id/connectionStatusText"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:background="@drawable/bg_info_panel"
-                    android:lineSpacingMultiplier="1.25"
-                    android:padding="12dp"
-                    android:text="@string/connection_not_tested"
-                    android:textColor="@color/lw_text_secondary"
-                    android:textSize="13sp" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-        <!-- Permissions & Assistant Card -->
-        <com.google.android.material.card.MaterialCardView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            app:cardBackgroundColor="@color/lw_card_bg"
-            app:cardCornerRadius="22dp"
-            app:cardElevation="0dp"
-            app:strokeColor="@color/lw_card_stroke"
-            app:strokeWidth="1dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="18dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:contentDescription="@string/section_setup"
-                        android:src="@drawable/ic_sparkle"
-                        app:tint="@color/lw_accent" />
-
-                    <TextView
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/micPermissionSwitch"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="10dp"
-                        android:text="@string/section_setup"
-                        android:textColor="@color/lw_text_primary"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
+                        android:layout_marginStart="16dp"
+                        android:clickable="false"
+                        android:focusable="false"
+                        android:importantForAccessibility="no" />
                 </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
 
                 <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:background="@drawable/bg_info_panel"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:padding="12dp">
-
-                    <ImageView
-                        android:id="@+id/micStatusIcon"
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:contentDescription="@string/grant_mic_permission"
-                        android:src="@drawable/ic_mic"
-                        app:tint="@color/lw_text_secondary" />
+                    android:id="@+id/defaultAssistantRow"
+                    style="@style/Widget.LocalWhisper.Row">
 
                     <TextView
-                        android:id="@+id/statusText"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="10dp"
-                        android:layout_weight="1"
-                        android:text="@string/mic_permission_missing"
-                        android:textColor="@color/lw_text_primary"
-                        android:textSize="14sp" />
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_default_assistant" />
+
+                    <TextView
+                        android:id="@+id/defaultAssistantSubtitle"
+                        style="@style/Widget.LocalWhisper.RowValue"
+                        android:text="@string/default_assistant_inactive" />
                 </LinearLayout>
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/requestPermissionButton"
-                    style="?attr/materialButtonOutlinedStyle"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="12dp"
-                    android:text="@string/grant_mic_permission"
-                    app:cornerRadius="14dp"
-                    app:icon="@drawable/ic_mic"
-                    app:iconGravity="textStart"
-                    app:iconSize="18dp"
-                    app:strokeColor="@color/lw_card_stroke" />
+                <View style="@style/Widget.LocalWhisper.Divider" />
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/setDefaultAssistantButton"
-                    style="?attr/materialButtonOutlinedStyle"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="8dp"
-                    android:text="@string/set_default_assistant"
-                    app:cornerRadius="14dp"
-                    app:icon="@drawable/ic_sparkle"
-                    app:iconGravity="textStart"
-                    app:iconSize="18dp"
-                    app:strokeColor="@color/lw_card_stroke" />
+                <LinearLayout
+                    android:id="@+id/launchOverlayRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_launch_overlay" />
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowSummary"
+                        android:text="@string/row_launch_overlay_hint" />
+                </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
-
-        <!-- Primary Launch CTA -->
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/launchVoiceOverlayButton"
-            android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:layout_marginTop="22dp"
-            android:text="@string/launch_voice_overlay"
-            android:textSize="15sp"
-            android:textStyle="bold"
-            app:cornerRadius="28dp"
-            app:icon="@drawable/ic_mic"
-            app:iconGravity="textStart"
-            app:iconSize="20dp" />
 
     </LinearLayout>
 </ScrollView>

@@ -1,140 +1,232 @@
 package me.Integer.localwhisper
 
 import android.Manifest
+import android.app.role.RoleManager
+import android.content.DialogInterface
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
+import android.widget.TextView
 import android.widget.Toast
+import androidx.annotation.ColorRes
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.launch
 import me.Integer.localwhisper.databinding.ActivityMainBinding
+import me.Integer.localwhisper.databinding.DialogLanguageBinding
+import me.Integer.localwhisper.databinding.DialogServerAddressBinding
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var prefs: ServerPreferences
     private val api = LocalWhisperApi()
+    private var isTestingConnection = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         prefs = ServerPreferences(this)
 
         applyWindowInsets()
-        populateSavedSettings()
-        setupViews()
-        updatePermissionStatus()
-        updateConnectionPill(getString(R.string.status_pill_untested), R.color.lw_text_secondary)
+        setupRows()
+        refreshServerRows()
+        resetConnectionStatus()
     }
 
     override fun onResume() {
         super.onResume()
-        updatePermissionStatus()
+        updatePermissionRow()
+        updateDefaultAssistantRow()
     }
 
+    // ------------------------------------------------------------ Layout
+
     private fun applyWindowInsets() {
-        val basePadding = dpToPx(20)
-        val baseBottom = dpToPx(28)
+        val horizontal = dpToPx(12)
+        val baseTop = dpToPx(24)
+        val baseBottom = dpToPx(24)
         ViewCompat.setOnApplyWindowInsetsListener(binding.rootScroll) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             binding.contentContainer.setPadding(
-                basePadding,
-                basePadding + bars.top,
-                basePadding,
+                horizontal + bars.left,
+                baseTop + bars.top,
+                horizontal + bars.right,
                 baseBottom + bars.bottom
             )
             insets
         }
     }
 
-    private fun populateSavedSettings() {
-        binding.serverHostInput.setText(prefs.serverHost)
-        binding.serverPortInput.setText(prefs.serverPort.toString())
-        binding.languageInput.setText(prefs.language)
+    private fun setupRows() {
+        binding.serverAddressRow.setOnClickListener { showServerAddressDialog() }
+        binding.languageRow.setOnClickListener { showLanguageDialog() }
+        binding.testConnectionRow.setOnClickListener { testConnection() }
+        binding.micPermissionRow.setOnClickListener { handleMicPermissionRequest() }
+        binding.defaultAssistantRow.setOnClickListener { openAssistantSettings() }
+        binding.launchOverlayRow.setOnClickListener { launchVoiceOverlay() }
     }
 
-    private fun setupViews() {
-        binding.saveAndTestButton.setOnClickListener { saveAndTestConnection() }
-        binding.requestPermissionButton.setOnClickListener { handleMicPermissionRequest() }
-        binding.setDefaultAssistantButton.setOnClickListener { openAssistantSettings() }
-        binding.launchVoiceOverlayButton.setOnClickListener { launchVoiceOverlay() }
+    private fun refreshServerRows() {
+        binding.serverAddressValue.text =
+            getString(R.string.server_address_format, prefs.serverHost, prefs.serverPort)
+        val language = prefs.language
+        binding.languageValue.text =
+            if (language.isEmpty()) getString(R.string.row_language_auto) else language
     }
 
-    private fun saveAndTestConnection() {
-        val host = ServerPreferences.sanitizeHost(binding.serverHostInput.text?.toString().orEmpty())
-        val port = binding.serverPortInput.text?.toString()?.trim()?.toIntOrNull()
-        if (host.isEmpty() || port == null || port !in 1..65535) {
-            binding.connectionStatusText.text = getString(R.string.invalid_server_config)
-            updateConnectionPill(getString(R.string.status_pill_offline), R.color.lw_error)
-            return
+    // ------------------------------------------------------------ Dialogs
+
+    private fun showServerAddressDialog() {
+        val dialogBinding = DialogServerAddressBinding.inflate(layoutInflater)
+        dialogBinding.dialogHostInput.setText(prefs.serverHost)
+        dialogBinding.dialogPortInput.setText(prefs.serverPort.toString())
+
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.row_server_address)
+            .setView(dialogBinding.root)
+            .setNegativeButton(R.string.dialog_cancel, null)
+            .setPositiveButton(R.string.dialog_save, null)
+            .create()
+        // Override the positive button so invalid input keeps the dialog open.
+        dialog.setOnShowListener {
+            dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+                if (saveServerAddress(dialogBinding)) {
+                    dialog.dismiss()
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun saveServerAddress(dialogBinding: DialogServerAddressBinding): Boolean {
+        val host = ServerPreferences.sanitizeHost(
+            dialogBinding.dialogHostInput.text?.toString().orEmpty()
+        )
+        val port = dialogBinding.dialogPortInput.text?.toString()?.trim()?.toIntOrNull()
+        val hostValid = host.isNotEmpty()
+        val portValid = port != null && port in 1..65535
+
+        dialogBinding.dialogHostLayout.error =
+            if (hostValid) null else getString(R.string.invalid_host)
+        dialogBinding.dialogPortLayout.error =
+            if (portValid) null else getString(R.string.invalid_port)
+        if (!hostValid || port == null || !portValid) {
+            return false
         }
 
         prefs.serverHost = host
         prefs.serverPort = port
-        prefs.language = binding.languageInput.text?.toString().orEmpty()
+        refreshServerRows()
+        resetConnectionStatus()
+        return true
+    }
 
-        val baseUrl = prefs.buildBaseUrl() ?: return
-        binding.saveAndTestButton.isEnabled = false
-        binding.connectionStatusText.text = getString(R.string.testing_connection)
-        updateConnectionPill(getString(R.string.status_pill_checking), R.color.lw_accent)
+    private fun showLanguageDialog() {
+        val dialogBinding = DialogLanguageBinding.inflate(layoutInflater)
+        dialogBinding.dialogLanguageInput.setText(prefs.language)
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.row_language)
+            .setView(dialogBinding.root)
+            .setNegativeButton(R.string.dialog_cancel, null)
+            .setPositiveButton(R.string.dialog_save) { _, _ ->
+                prefs.language = dialogBinding.dialogLanguageInput.text?.toString().orEmpty()
+                refreshServerRows()
+            }
+            .show()
+    }
+
+    // ------------------------------------------------------------ Connection
+
+    private fun testConnection() {
+        if (isTestingConnection) return
+        val baseUrl = prefs.buildBaseUrl()
+        if (baseUrl == null) {
+            showTestResult(getString(R.string.invalid_server_config), R.color.lw_error)
+            showConnectionStatus(getString(R.string.main_status_offline), R.color.lw_error)
+            return
+        }
+
+        isTestingConnection = true
+        showTestResult(getString(R.string.testing_connection), R.color.lw_accent)
+        showConnectionStatus(getString(R.string.main_status_checking), R.color.lw_accent)
 
         lifecycleScope.launch {
             val result = api.checkHealth(baseUrl)
-            binding.saveAndTestButton.isEnabled = true
+            isTestingConnection = false
             result.onSuccess { health ->
-                binding.connectionStatusText.text = formatHealthSummary(health)
-                updateConnectionPill(getString(R.string.status_pill_connected), R.color.lw_success)
+                showTestResult(formatHealthSummary(health), R.color.lw_text_secondary)
+                showConnectionStatus(getString(R.string.main_status_connected), R.color.lw_success)
             }.onFailure { exc ->
-                binding.connectionStatusText.text =
-                    "Connection failed: ${exc.message ?: "Unable to reach $baseUrl"}"
-                updateConnectionPill(getString(R.string.status_pill_offline), R.color.lw_error)
+                val reason = exc.message ?: baseUrl
+                showTestResult(getString(R.string.connection_failed, reason), R.color.lw_error)
+                showConnectionStatus(getString(R.string.main_status_offline), R.color.lw_error)
             }
         }
     }
 
-    private fun updateConnectionPill(label: String, dotColorRes: Int) {
-        binding.connectionPillText.text = label
-        binding.connectionDot.backgroundTintList =
-            ColorStateList.valueOf(ContextCompat.getColor(this, dotColorRes))
+    private fun resetConnectionStatus() {
+        showConnectionStatus(getString(R.string.main_status_untested), R.color.lw_text_secondary)
+        showTestResult(getString(R.string.row_test_connection_hint), R.color.lw_text_secondary)
+    }
+
+    private fun showConnectionStatus(text: String, @ColorRes colorRes: Int) {
+        setColoredText(binding.connectionStatusLine, text, colorRes)
+    }
+
+    private fun showTestResult(text: String, @ColorRes colorRes: Int) {
+        setColoredText(binding.testConnectionSubtitle, text, colorRes)
+    }
+
+    private fun setColoredText(view: TextView, text: String, @ColorRes colorRes: Int) {
+        view.text = text
+        view.setTextColor(ContextCompat.getColor(this, colorRes))
     }
 
     private fun formatHealthSummary(health: HealthResponse): String {
         val clientNames = if (health.clients.isEmpty()) {
-            "None (start pc_client/run_client.bat)"
+            getString(R.string.health_no_clients)
         } else {
             health.clients.joinToString(", ") { it.name }
         }
-        return buildString {
-            appendLine("GPU: ${health.gpuName} (${health.device})")
-            appendLine("Model: ${health.model}")
-            append("PC Clients: $clientNames")
-        }
+        return getString(
+            R.string.health_summary,
+            health.gpuName,
+            health.device,
+            health.model,
+            clientNames
+        )
     }
 
-    private fun launchVoiceOverlay() {
-        if (!hasRecordAudioPermission()) {
-            handleMicPermissionRequest()
-            return
-        }
-        saveCurrentInputsSilently()
-        startActivity(Intent(this, AssistantActivity::class.java))
+    // ------------------------------------------------------------ Assistant
+
+    private fun updateDefaultAssistantRow() {
+        val isActive = isDefaultAssistant()
+        val text = getString(
+            if (isActive) R.string.default_assistant_active else R.string.default_assistant_inactive
+        )
+        val color = if (isActive) R.color.lw_success else R.color.lw_accent
+        setColoredText(binding.defaultAssistantSubtitle, text, color)
     }
 
-    private fun saveCurrentInputsSilently() {
-        val host = ServerPreferences.sanitizeHost(binding.serverHostInput.text?.toString().orEmpty())
-        val port = binding.serverPortInput.text?.toString()?.trim()?.toIntOrNull()
-        if (host.isNotEmpty() && port != null && port in 1..65535) {
-            prefs.serverHost = host
-            prefs.serverPort = port
-            prefs.language = binding.languageInput.text?.toString().orEmpty()
+    private fun isDefaultAssistant(): Boolean {
+        val roleManager = getSystemService(RoleManager::class.java) ?: return false
+        return try {
+            roleManager.isRoleAvailable(RoleManager.ROLE_ASSISTANT) &&
+                roleManager.isRoleHeld(RoleManager.ROLE_ASSISTANT)
+        } catch (exc: Exception) {
+            Log.w(TAG, "Could not query assistant role", exc)
+            false
         }
     }
 
@@ -147,24 +239,29 @@ class MainActivity : AppCompatActivity() {
             try {
                 startActivity(intent)
                 return
-            } catch (_: Exception) {
-                // Try fallback settings screen
+            } catch (exc: Exception) {
+                Log.d(TAG, "Settings screen ${intent.action} unavailable, trying next", exc)
             }
         }
-        Toast.makeText(this, "Open Settings -> Default apps -> Digital assistant", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, R.string.default_assistant_fallback_toast, Toast.LENGTH_LONG).show()
     }
+
+    private fun launchVoiceOverlay() {
+        if (!hasRecordAudioPermission()) {
+            handleMicPermissionRequest()
+            return
+        }
+        startActivity(Intent(this, AssistantActivity::class.java))
+    }
+
+    // ------------------------------------------------------------ Permission
 
     private fun handleMicPermissionRequest() {
         if (hasRecordAudioPermission()) {
-            Toast.makeText(
-                this,
-                getString(R.string.mic_permission_already_granted),
-                Toast.LENGTH_SHORT
-            ).show()
-            updatePermissionStatus()
+            Toast.makeText(this, R.string.mic_permission_already_granted, Toast.LENGTH_SHORT).show()
+            updatePermissionRow()
             return
         }
-
         ActivityCompat.requestPermissions(
             this,
             arrayOf(Manifest.permission.RECORD_AUDIO),
@@ -172,33 +269,21 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun updatePermissionRow() {
+        val granted = hasRecordAudioPermission()
+        binding.micPermissionSwitch.isChecked = granted
+        val text = getString(
+            if (granted) R.string.mic_permission_granted else R.string.mic_permission_missing
+        )
+        val color = if (granted) R.color.lw_accent else R.color.lw_text_secondary
+        setColoredText(binding.micPermissionSubtitle, text, color)
+    }
+
     private fun hasRecordAudioPermission(): Boolean {
         return ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun updatePermissionStatus() {
-        val granted = hasRecordAudioPermission()
-        binding.statusText.text = if (granted) {
-            getString(R.string.mic_permission_granted)
-        } else {
-            getString(R.string.mic_permission_missing)
-        }
-        binding.micStatusIcon.setImageResource(
-            if (granted) R.drawable.ic_check_circle else R.drawable.ic_mic
-        )
-        val tintColor = ContextCompat.getColor(
-            this,
-            if (granted) R.color.lw_success else R.color.lw_text_secondary
-        )
-        binding.micStatusIcon.imageTintList = ColorStateList.valueOf(tintColor)
-        binding.requestPermissionButton.isEnabled = !granted
-    }
-
-    private fun dpToPx(dp: Int): Int {
-        return (dp * resources.displayMetrics.density).toInt()
     }
 
     override fun onRequestPermissionsResult(
@@ -210,20 +295,20 @@ class MainActivity : AppCompatActivity() {
         if (requestCode != RECORD_AUDIO_REQUEST_CODE) {
             return
         }
-
         val granted = grantResults.isNotEmpty() &&
             grantResults[0] == PackageManager.PERMISSION_GRANTED
         if (!granted) {
-            Toast.makeText(
-                this,
-                getString(R.string.mic_permission_denied),
-                Toast.LENGTH_SHORT
-            ).show()
+            Toast.makeText(this, R.string.mic_permission_denied, Toast.LENGTH_SHORT).show()
         }
-        updatePermissionStatus()
+        updatePermissionRow()
+    }
+
+    private fun dpToPx(dp: Int): Int {
+        return (dp * resources.displayMetrics.density).toInt()
     }
 
     companion object {
+        private const val TAG = "LW-Main"
         private const val RECORD_AUDIO_REQUEST_CODE = 1001
     }
 }

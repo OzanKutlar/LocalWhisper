@@ -185,7 +185,7 @@ class WavAudioRecorder(
         private const val BITS_PER_SAMPLE = 16
         private const val WAV_HEADER_SIZE = 44
         private const val READ_CHUNK_BYTES = 1600 // 50 ms chunks at 16 kHz mono 16-bit
-        private const val MAX_RECORDING_MS = 120_000L
+        const val MAX_RECORDING_MS = 120_000L
         private const val MAX_READ_ITERATIONS = 10_000
         private const val THREAD_JOIN_TIMEOUT_MS = 2_000L
     }

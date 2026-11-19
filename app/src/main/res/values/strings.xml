@@ -1,46 +1,81 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">LocalWhisper</string>
-    <string name="main_subtitle">Local CUDA voice-to-keystroke assistant</string>
-    <string name="section_server">Server PC Connection</string>
-    <string name="section_setup">Permissions &amp; Assistant</string>
-    <string name="hint_server_host_short">Server IP / Host</string>
-    <string name="hint_server_port_short">Port</string>
-    <string name="hint_language">Language hint (blank = Auto-detect)</string>
-    <string name="save_and_test">Save &amp; Test Connection</string>
+
+    <!-- Main screen: status line -->
+    <string name="main_status_untested">Connection not tested</string>
+    <string name="main_status_checking">Checking connection…</string>
+    <string name="main_status_connected">Connected to server</string>
+    <string name="main_status_offline">Server offline</string>
+
+    <!-- Main screen: sections and rows -->
+    <string name="section_server">Server</string>
+    <string name="section_assistant">Assistant</string>
+    <string name="row_server_address">Server address</string>
+    <string name="server_address_format">%1$s:%2$d</string>
+    <string name="row_language">Language hint</string>
+    <string name="row_language_auto">Auto-detect</string>
+    <string name="row_test_connection">Test connection</string>
+    <string name="row_test_connection_hint">Check the GPU, model and connected PCs</string>
+    <string name="row_mic_permission">Microphone access</string>
+    <string name="row_default_assistant">Default digital assistant</string>
+    <string name="row_launch_overlay">Launch voice overlay</string>
+    <string name="row_launch_overlay_hint">Start dictating right now</string>
+
+    <!-- Main screen: values and feedback -->
     <string name="testing_connection">Connecting to server…</string>
-    <string name="connection_not_tested">Enter your Server PC IP and tap Save &amp; Test to verify CUDA and connected PCs.</string>
+    <string name="connection_failed">Connection failed: %1$s</string>
+    <string name="health_summary">GPU: %1$s (%2$s)\nModel: %3$s\nPC clients: %4$s</string>
+    <string name="health_no_clients">None (start pc_client/run_client.bat)</string>
     <string name="invalid_server_config">Please enter a valid server host and port (1–65535).</string>
-    <string name="status_pill_untested">Not tested</string>
-    <string name="status_pill_checking">Checking…</string>
-    <string name="status_pill_connected">Connected</string>
-    <string name="status_pill_offline">Offline</string>
-    <string name="grant_mic_permission">Grant Microphone Permission</string>
-    <string name="mic_permission_granted">Microphone permission granted</string>
-    <string name="mic_permission_missing">Microphone permission required</string>
+    <string name="mic_permission_granted">Allowed</string>
+    <string name="mic_permission_missing">Required to record your voice</string>
     <string name="mic_permission_already_granted">Microphone permission already granted</string>
     <string name="mic_permission_denied">Microphone permission denied</string>
-    <string name="set_default_assistant">Set as Default Digital Assistant</string>
-    <string name="launch_voice_overlay">Launch Voice Overlay</string>
+    <string name="default_assistant_active">LocalWhisper is your assistant</string>
+    <string name="default_assistant_inactive">Tap to choose LocalWhisper</string>
+    <string name="default_assistant_fallback_toast">Open Settings → Apps → Choose default apps → Digital assistant app</string>
 
+    <!-- Main screen: dialogs -->
+    <string name="dialog_host_hint">Server IP / Host</string>
+    <string name="dialog_port_hint">Port</string>
+    <string name="dialog_language_hint">Language (blank = Auto-detect)</string>
+    <string name="dialog_save">Save</string>
+    <string name="dialog_cancel">Cancel</string>
+    <string name="invalid_host">Enter a server host</string>
+    <string name="invalid_port">Enter a port from 1 to 65535</string>
+
+    <!-- Voice overlay: states -->
     <string name="assistant_state_listening">Listening</string>
     <string name="assistant_state_transcribing">Transcribing</string>
-    <string name="assistant_state_review">Review &amp; Edit</string>
+    <string name="assistant_state_review">Review &amp; edit</string>
     <string name="assistant_state_sending">Sending…</string>
     <string name="assistant_state_sent">Sent</string>
     <string name="assistant_state_error">Setup needed</string>
-    <string name="assistant_tap_to_stop">Tap to stop &amp; transcribe</string>
+
+    <!-- Voice overlay: subtitle and target -->
     <string name="assistant_model_hint">Running Qwen3-ASR-1.7B on CUDA…</string>
+    <string name="assistant_target_format">Target: %1$s</string>
+    <string name="assistant_target_loading">Looking for PC clients…</string>
+    <string name="assistant_no_pc_connected">No PC client connected</string>
+    <string name="assistant_pick_target">Send to which PC?</string>
+    <string name="assistant_sent_message">Sent to %1$s</string>
+
+    <!-- Voice overlay: controls -->
+    <string name="assistant_close_desc">Close</string>
+    <string name="assistant_settings_desc">Open LocalWhisper settings</string>
     <string name="assistant_cancel">Cancel</string>
     <string name="assistant_stop_desc">Stop and transcribe</string>
-    <string name="assistant_rerecord">Re-record</string>
+    <string name="assistant_restart_desc">Restart recording</string>
     <string name="assistant_send_to_pc">Send to PC</string>
-    <string name="assistant_transcript_hint">Transcript (supports AHK keys like {Enter})</string>
-    <string name="assistant_target_pc_hint">Target PC Client</string>
-    <string name="assistant_no_pc_connected">No PC client connected</string>
     <string name="assistant_open_settings">Open LocalWhisper</string>
+    <string name="assistant_transcript_hint">Transcript (supports AHK keys like {Enter})</string>
+
+    <!-- Voice overlay: errors -->
     <string name="assistant_mic_required">Microphone permission is required. Open LocalWhisper to grant it.</string>
+    <string name="assistant_mic_start_failed">Unable to start microphone</string>
+    <string name="assistant_no_audio">No audio captured.</string>
+    <string name="assistant_transcription_failed">Transcription failed</string>
+    <string name="assistant_send_failed">Failed to send keystrokes</string>
     <string name="assistant_empty_transcript">Enter or dictate some text before sending.</string>
-    <string name="assistant_sent_message">Sent to %1$s</string>
-    <string name="assistant_close_desc">Close</string>
 </resources>

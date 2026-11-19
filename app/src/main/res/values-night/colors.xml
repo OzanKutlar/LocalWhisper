@@ -1,25 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="lw_bg">#0B0D14</color>
-    <color name="lw_card_bg">#151824</color>
-    <color name="lw_card_elevated">#1D2234</color>
-    <color name="lw_card_stroke">#38818CF8</color>
-    <color name="lw_text_primary">#F3F5FC</color>
-    <color name="lw_text_secondary">#98A1BD</color>
-    <color name="lw_accent">#7C7BFF</color>
-    <color name="lw_accent_on">#0B0D1E</color>
-    <color name="lw_accent_container">#262B4D</color>
-    <color name="lw_accent_on_container">#DCE0FF</color>
+    <!-- Surfaces -->
+    <color name="lw_bg">#000000</color>
+    <color name="lw_card_bg">#17171A</color>
+    <color name="lw_card_elevated">#232327</color>
+    <color name="lw_divider">#2C2C30</color>
+    <color name="lw_pill_bg">#26262B</color>
+    <!-- Text -->
+    <color name="lw_text_primary">#FAFAFA</color>
+    <color name="lw_text_secondary">#8E8E93</color>
+    <color name="lw_section_header">#A3A3A8</color>
+    <!-- Accent -->
+    <color name="lw_accent">#3E91FF</color>
+    <color name="lw_accent_on">#FFFFFF</color>
+    <color name="lw_accent_container">#10335C</color>
+    <color name="lw_accent_on_container">#D6E8FF</color>
+    <!-- Status -->
     <color name="lw_record_coral">#FB4F6C</color>
-    <color name="lw_record_coral_soft">#30FB4F6C</color>
-    <color name="lw_success">#34D399</color>
-    <color name="lw_success_soft">#2634D399</color>
-    <color name="lw_error">#F87171</color>
-    <color name="lw_error_soft">#26F87171</color>
-    <color name="lw_pill_bg">#20253A</color>
-    <color name="lw_handle">#3D4566</color>
-    <color name="lw_wave_start">#22D3EE</color>
-    <color name="lw_wave_mid">#818CF8</color>
-    <color name="lw_wave_end">#C084FC</color>
+    <color name="lw_success">#34C77B</color>
+    <color name="lw_error">#FF5A5F</color>
+    <color name="lw_error_soft">#26FF5A5F</color>
+    <!-- Voice overlay -->
+    <color name="lw_player_gradient_start">#000000</color>
+    <color name="lw_player_gradient_end">#2A2326</color>
+    <color name="lw_artwork_bg">#15171C</color>
+    <color name="lw_slider_inactive">#4DFFFFFF</color>
+    <color name="lw_wave_start">#3E91FF</color>
+    <color name="lw_wave_mid">#6FB0FF</color>
+    <color name="lw_wave_end">#A9D1FF</color>
     <color name="white">#FFFFFFFF</color>
 </resources>
