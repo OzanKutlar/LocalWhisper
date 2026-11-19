@@ -150,8 +150,8 @@ class WavAudioRecorder(
             idx += 2
         }
         val rms = sqrt(sumSquares / sampleCount) / 32768.0
-        // Boost quiet speech slightly for responsive visual feedback
-        return min(1f, (rms * 4.2).toFloat())
+        // Raw linear loudness (0..1); WaveformView applies its own decibel curve
+        return min(1.0, rms).toFloat()
     }
 
     private fun writeWavHeader(file: File, totalAudioBytes: Long) {

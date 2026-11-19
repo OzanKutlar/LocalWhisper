@@ -23,8 +23,9 @@
     <!-- Voice overlay -->
     <color name="lw_scrim">#8C000000</color>
     <color name="lw_slider_inactive">#33000000</color>
-    <color name="lw_wave_start">#0072DE</color>
-    <color name="lw_wave_mid">#3E91FF</color>
-    <color name="lw_wave_end">#7DB6FF</color>
+    <color name="lw_wave_start">#00A9C9</color>
+    <color name="lw_wave_mid">#2F5BFF</color>
+    <color name="lw_wave_end">#8B3DFF</color>
+    <color name="lw_wave_hot">#F03C96</color>
     <color name="white">#FFFFFFFF</color>
 </resources>
