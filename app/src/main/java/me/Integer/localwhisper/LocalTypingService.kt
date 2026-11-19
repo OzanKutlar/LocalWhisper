@@ -125,18 +125,41 @@ class LocalTypingService : AccessibilityService() {
      */
     private fun currentRealText(field: AccessibilityNodeInfo): String {
         val reported = field.text?.toString().orEmpty()
+        val hintLength = field.hintText?.length ?: 0
         val hintFlag = field.isShowingHintText
         val matchesHint = reported.isNotEmpty() && reported == field.hintText?.toString()
+        val noSelectionSupport = reported.isNotEmpty() && reportsNoRealText(field)
         val matchesChildLabel = reported.isNotEmpty() && !hintFlag && !matchesHint &&
-            childShowsText(field, reported)
-        // Lengths only: the user's text is never written to the log.
+            !noSelectionSupport && childShowsText(field, reported)
+        val treatedEmpty = hintFlag || matchesHint || noSelectionSupport || matchesChildLabel
+        // Lengths and flags only: the user's text is never written to the log.
         Log.d(
             TAG,
-            "field=${field.className} len=${reported.length} hintFlag=$hintFlag " +
-                "matchesHint=$matchesHint matchesChildLabel=$matchesChildLabel " +
+            "field=${field.className} len=${reported.length} hintLen=$hintLength " +
+                "hintFlag=$hintFlag matchesHint=$matchesHint " +
+                "noSelectionSupport=$noSelectionSupport matchesChildLabel=$matchesChildLabel " +
+                "treatedEmpty=$treatedEmpty " +
                 "sel=${field.textSelectionStart}..${field.textSelectionEnd}"
         )
-        return if (hintFlag || matchesHint || matchesChildLabel) "" else reported
+        return if (treatedEmpty) "" else reported
+    }
+
+    /**
+     * Android only gives a text field a cursor and the set-selection action when its real text is
+     * non-empty, so an editable field lacking both is showing a placeholder, whatever its text says.
+     */
+    private fun reportsNoRealText(field: AccessibilityNodeInfo): Boolean {
+        if (!field.isEditable) return false
+        val noCursor = field.textSelectionStart < 0 && field.textSelectionEnd < 0
+        if (!noCursor) return false
+        return !supportsAction(field, AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_SELECTION)
+    }
+
+    private fun supportsAction(
+        node: AccessibilityNodeInfo,
+        action: AccessibilityNodeInfo.AccessibilityAction
+    ): Boolean {
+        return node.actionList.any { it.id == action.id }
     }
 
     /** True when a non-editable child or grandchild label shows exactly this text (a drawn placeholder). */
@@ -166,6 +189,11 @@ class LocalTypingService : AccessibilityService() {
     }
 
     private fun moveCursor(field: AccessibilityNodeInfo, position: Int) {
+        // The node is a snapshot from before ACTION_SET_TEXT; refresh it so set-selection is offered.
+        if (!field.refresh()) {
+            Log.d(TAG, "Field is gone, skipping the cursor move")
+            return
+        }
         val args = Bundle().apply {
             putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, position)
             putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, position)
