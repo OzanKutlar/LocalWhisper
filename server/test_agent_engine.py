@@ -10,7 +10,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_engine import (  # noqa: E402
+    AGENT_TOOLS,
     AgentEngine,
+    ThinkTagStreamParser,
     check_confirmation_required,
     extract_thinking_and_content,
     summarize_tool_call,
@@ -64,6 +66,34 @@ class ThinkingExtractionTests(unittest.TestCase):
         thought, content = extract_thinking_and_content(msg)
         self.assertEqual(thought, "Checking media keys")
         self.assertEqual(content, "Done!")
+
+    def test_incremental_think_tag_stream_parser_handles_split_tags(self) -> None:
+        parser = ThinkTagStreamParser()
+        chunks = ["<th", "ink>Step 1: ", "check PC</thi", "nk>\nHere is ", "the answer."]
+        thoughts: list[str] = []
+        replies: list[str] = []
+        for ch in chunks:
+            t_delta, r_delta = parser.feed(ch)
+            if t_delta:
+                thoughts.append(t_delta)
+            if r_delta:
+                replies.append(r_delta)
+        t_flush, r_flush = parser.flush()
+        if t_flush:
+            thoughts.append(t_flush)
+        if r_flush:
+            replies.append(r_flush)
+
+        self.assertEqual("".join(thoughts), "Step 1: check PC")
+        self.assertEqual("".join(replies), "Here is the answer.")
+
+    def test_ahk_tool_description_includes_ctrl_enter_example(self) -> None:
+        ahk_tool = next(
+            t["function"]
+            for t in AGENT_TOOLS
+            if t["function"]["name"] == "execute_pc_ahk_sequence"
+        )
+        self.assertIn("{^Enter}", ahk_tool["description"])
 
 
 class ConfirmationGatePolicyTests(unittest.TestCase):
@@ -286,6 +316,38 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             summarize_tool_call("inspect_phone_screen", {}),
             "View Phone Screen",
         )
+
+    async def test_run_turn_stream_emits_thinking_tools_and_done_events(self) -> None:
+        hub = FakeClientHub()
+        scripted = [
+            {
+                "role": "assistant",
+                "content": "<think>Streaming thought 1.</think>",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "control_pc_media",
+                            "arguments": '{"action": "play_pause"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "<think>Streaming thought 2.</think>Music toggled.",
+            },
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        events = [ev async for ev in engine.run_turn_stream("Toggle music")]
+        event_types = [ev["type"] for ev in events]
+        self.assertIn("session", event_types)
+        self.assertIn("thinking_delta", event_types)
+        self.assertIn("tool_calls", event_types)
+        self.assertIn("reply_delta", event_types)
+        self.assertEqual(event_types[-1], "done")
+        done_result = events[-1]["result"]
+        self.assertEqual(done_result["reply"], "Music toggled.")
 
 
 if __name__ == "__main__":

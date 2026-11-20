@@ -13,6 +13,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 SERVER_DIR = Path(__file__).resolve().parent
@@ -170,6 +171,41 @@ def create_app(
             LOGGER.exception("Agent confirmation failed")
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return result.to_dict()
+
+    @app.post("/api/agent/stream")
+    async def run_agent_stream(request: AgentRunRequest) -> StreamingResponse:
+        async def _event_generator():
+            try:
+                async for event in agent_engine.run_turn_stream(
+                    prompt=request.prompt,
+                    client_id=request.client_id,
+                    session_id=request.session_id,
+                    history=request.history,
+                    phone_screen=request.phone_screen,
+                ):
+                    yield json.dumps(event) + "\n"
+            except Exception as exc:
+                LOGGER.exception("Agent stream failed")
+                yield json.dumps({"type": "error", "detail": str(exc)}) + "\n"
+
+        return StreamingResponse(_event_generator(), media_type="application/x-ndjson")
+
+    @app.post("/api/agent/confirm/stream")
+    async def confirm_agent_tool_stream(request: AgentConfirmRequest) -> StreamingResponse:
+        async def _event_generator():
+            try:
+                async for event in agent_engine.confirm_tool_stream(
+                    session_id=request.session_id,
+                    confirmation_id=request.confirmation_id,
+                    approved=request.approved,
+                    client_id=request.client_id,
+                ):
+                    yield json.dumps(event) + "\n"
+            except Exception as exc:
+                LOGGER.exception("Agent confirmation stream failed")
+                yield json.dumps({"type": "error", "detail": str(exc)}) + "\n"
+
+        return StreamingResponse(_event_generator(), media_type="application/x-ndjson")
 
     @app.websocket("/ws/client")
     async def pc_client_websocket(

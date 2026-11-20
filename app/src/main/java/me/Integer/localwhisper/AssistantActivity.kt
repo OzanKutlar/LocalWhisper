@@ -30,9 +30,11 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import me.Integer.localwhisper.databinding.ActivityAssistantBinding
 import java.io.File
 import java.util.Locale
@@ -62,6 +64,17 @@ class AssistantActivity : AppCompatActivity() {
         val right: ControlSpec?
     )
 
+    private data class LiveStreamingTurnViews(
+        val thinkingCard: LinearLayout,
+        val thinkingHeader: TextView,
+        val thinkingBody: TextView,
+        val toolScroll: HorizontalScrollView,
+        val toolGroup: ChipGroup,
+        val replyBox: TextView,
+        var userToggledThinking: Boolean = false,
+        var isThinkingExpanded: Boolean = true
+    )
+
     private lateinit var binding: ActivityAssistantBinding
     private lateinit var prefs: ServerPreferences
     private lateinit var sessionStore: AgentSessionStore
@@ -84,6 +97,7 @@ class AssistantActivity : AppCompatActivity() {
     private var agentSessionId: String? = null
     private var lastSubmittedPrompt: String = ""
     private var activeConfirmation: PendingConfirmationInfo? = null
+    private var liveTurnViews: LiveStreamingTurnViews? = null
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
@@ -495,24 +509,33 @@ class AssistantActivity : AppCompatActivity() {
         clearError()
         hideKeyboard()
         lastSubmittedPrompt = prompt
-        val existingTurns = sessionStore.getSession(agentSessionId)?.turns.orEmpty()
+        val existingSession = sessionStore.getSession(agentSessionId)
+        val existingTurns = existingSession?.turns.orEmpty()
+        prepareLiveStreamingTurn(existingTurns, userPrompt = prompt, isConfirmationResume = false)
         setUiState(UiState.AGENT_THINKING)
 
         val targetClientId = if (isLocalTargetSelected()) null else selectedClient?.id
         val phoneScreenSnapshot = LocalTypingService.capturePhoneScreenSnapshot()
         activeJob?.cancel()
         activeJob = lifecycleScope.launch {
-            val result = api.runAgent(
+            val result = api.runAgentStream(
                 baseUrl = baseUrl,
                 prompt = prompt,
                 clientId = targetClientId,
                 sessionId = agentSessionId,
                 priorTurns = existingTurns,
-                phoneScreen = phoneScreenSnapshot
+                phoneScreen = phoneScreenSnapshot,
+                onProgress = { progress ->
+                    withContext(Dispatchers.Main) {
+                        updateLiveStreamingTurn(progress)
+                    }
+                }
             )
             result.onSuccess { response ->
+                liveTurnViews = null
                 handleAgentResponse(response, isConfirmationResume = false)
             }.onFailure { exc ->
+                liveTurnViews = null
                 showError(exc.message ?: getString(R.string.assistant_send_failed))
                 setUiState(UiState.REVIEW)
             }
@@ -525,25 +548,220 @@ class AssistantActivity : AppCompatActivity() {
         val pending = activeConfirmation ?: return
 
         clearError()
+        binding.confirmationGateCard.visibility = View.GONE
+        val existingTurns = sessionStore.getSession(sessionId)?.turns.orEmpty()
+        val lastPrompt = existingTurns.lastOrNull()?.userPrompt.orEmpty()
+        lastSubmittedPrompt = lastPrompt
+        prepareLiveStreamingTurn(
+            existingTurns = if (existingTurns.isNotEmpty()) existingTurns.dropLast(1) else emptyList(),
+            userPrompt = lastPrompt,
+            isConfirmationResume = true,
+            initialThinking = existingTurns.lastOrNull()?.thinking.orEmpty(),
+            initialTools = existingTurns.lastOrNull()?.toolCalls.orEmpty()
+        )
         setUiState(UiState.AGENT_THINKING)
 
         val targetClientId = if (isLocalTargetSelected()) null else selectedClient?.id
         activeJob?.cancel()
         activeJob = lifecycleScope.launch {
-            val result = api.confirmAgentAction(
+            val result = api.confirmAgentActionStream(
                 baseUrl = baseUrl,
                 sessionId = sessionId,
                 confirmationId = pending.confirmationId,
                 approved = approved,
-                clientId = targetClientId
+                clientId = targetClientId,
+                onProgress = { progress ->
+                    withContext(Dispatchers.Main) {
+                        updateLiveStreamingTurn(progress)
+                    }
+                }
             )
             result.onSuccess { response ->
+                liveTurnViews = null
                 handleAgentResponse(response, isConfirmationResume = true)
             }.onFailure { exc ->
+                liveTurnViews = null
                 showError(exc.message ?: getString(R.string.assistant_send_failed))
                 setUiState(UiState.AGENT_RESULT)
             }
         }
+    }
+
+    private fun prepareLiveStreamingTurn(
+        existingTurns: List<AgentChatTurn>,
+        userPrompt: String,
+        isConfirmationResume: Boolean,
+        initialThinking: String = "",
+        initialTools: List<AgentToolCallInfo> = emptyList()
+    ) {
+        val container = binding.chatHistoryContainer
+        container.removeAllViews()
+        for ((index, turn) in existingTurns.withIndex()) {
+            container.addView(buildTurnView(turn, isFirst = index == 0))
+        }
+
+        val isFirst = existingTurns.isEmpty()
+        val turnWrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                if (!isFirst) topMargin = dpToPx(12)
+            }
+        }
+
+        if (userPrompt.isNotBlank()) {
+            val userBox = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundResource(R.drawable.bg_status_pill)
+                setPadding(dpToPx(14), dpToPx(8), dpToPx(14), dpToPx(8))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dpToPx(6)
+                }
+            }
+            val userLabel = TextView(this).apply {
+                text = getString(R.string.assistant_you_label)
+                textSize = 11f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(ContextCompat.getColor(context, R.color.lw_accent))
+            }
+            val userText = TextView(this).apply {
+                text = userPrompt
+                textSize = 14f
+                setTextColor(ContextCompat.getColor(context, R.color.lw_text_primary))
+            }
+            userBox.addView(userLabel)
+            userBox.addView(userText)
+            turnWrapper.addView(userBox)
+        }
+
+        val thinkingCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_info_panel)
+            setPadding(dpToPx(12), dpToPx(9), dpToPx(12), dpToPx(9))
+            isClickable = true
+            isFocusable = true
+            visibility = visibleIf(initialThinking.isNotBlank())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dpToPx(6)
+            }
+        }
+        val thinkingHeader = TextView(this).apply {
+            text = getString(R.string.assistant_thinking_header_expanded)
+            textSize = 12f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(ContextCompat.getColor(context, R.color.lw_accent))
+        }
+        val thinkingBody = TextView(this).apply {
+            text = initialThinking
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setTextColor(ContextCompat.getColor(context, R.color.lw_text_secondary))
+            visibility = View.VISIBLE
+            setPadding(0, dpToPx(6), 0, 0)
+        }
+        thinkingCard.addView(thinkingHeader)
+        thinkingCard.addView(thinkingBody)
+        turnWrapper.addView(thinkingCard)
+
+        val toolScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = visibleIf(initialTools.isNotEmpty())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dpToPx(6)
+            }
+        }
+        val toolGroup = ChipGroup(this).apply {
+            isSingleLine = true
+            chipSpacingHorizontal = dpToPx(6)
+        }
+        toolScroll.addView(toolGroup)
+        turnWrapper.addView(toolScroll)
+
+        val replyBox = TextView(this).apply {
+            text = getString(
+                if (isConfirmationResume) R.string.assistant_agent_thinking_hint else R.string.assistant_state_thinking
+            )
+            textSize = 15f
+            setTextIsSelectable(true)
+            setLineSpacing(0f, 1.2f)
+            setBackgroundResource(R.drawable.bg_info_panel)
+            setPadding(dpToPx(14), dpToPx(11), dpToPx(14), dpToPx(11))
+            setTextColor(ContextCompat.getColor(context, R.color.lw_text_secondary))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        turnWrapper.addView(replyBox)
+        container.addView(turnWrapper)
+
+        val views = LiveStreamingTurnViews(
+            thinkingCard = thinkingCard,
+            thinkingHeader = thinkingHeader,
+            thinkingBody = thinkingBody,
+            toolScroll = toolScroll,
+            toolGroup = toolGroup,
+            replyBox = replyBox
+        )
+        thinkingCard.setOnClickListener {
+            performTapHaptic(it)
+            views.userToggledThinking = true
+            views.isThinkingExpanded = !views.isThinkingExpanded
+            thinkingBody.visibility = visibleIf(views.isThinkingExpanded)
+            thinkingHeader.setText(
+                if (views.isThinkingExpanded) {
+                    R.string.assistant_thinking_header_expanded
+                } else {
+                    R.string.assistant_thinking_header_collapsed
+                }
+            )
+            adjustAgentScrollHeightAndScrollToBottom(scrollToBottom = false)
+        }
+        if (initialTools.isNotEmpty()) {
+            bindChipsToGroup(toolGroup, initialTools)
+        }
+        liveTurnViews = views
+        adjustAgentScrollHeightAndScrollToBottom(scrollToBottom = true)
+    }
+
+    private fun updateLiveStreamingTurn(progress: AgentStreamProgress) {
+        if (progress.sessionId.isNotBlank()) {
+            agentSessionId = progress.sessionId
+        }
+        val views = liveTurnViews ?: return
+
+        if (progress.thinking.isNotBlank()) {
+            views.thinkingCard.visibility = View.VISIBLE
+            views.thinkingBody.text = progress.thinking
+            if (!views.userToggledThinking) {
+                views.isThinkingExpanded = true
+                views.thinkingBody.visibility = View.VISIBLE
+                views.thinkingHeader.setText(R.string.assistant_thinking_header_expanded)
+            }
+        }
+
+        if (progress.toolCalls.isNotEmpty()) {
+            views.toolScroll.visibility = View.VISIBLE
+            bindChipsToGroup(views.toolGroup, progress.toolCalls)
+        }
+
+        if (progress.reply.isNotBlank()) {
+            views.replyBox.setTextColor(ContextCompat.getColor(this, R.color.lw_text_primary))
+            views.replyBox.text = progress.reply
+        }
+
+        adjustAgentScrollHeightAndScrollToBottom(scrollToBottom = true)
     }
 
     private fun handleAgentResponse(response: AgentResponse, isConfirmationResume: Boolean) {
@@ -700,32 +918,7 @@ class AssistantActivity : AppCompatActivity() {
                 isSingleLine = true
                 chipSpacingHorizontal = dpToPx(6)
             }
-            val chipBg = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.lw_pill_bg))
-            for (pill in turn.toolCalls) {
-                val prefix = when (pill.status) {
-                    "ok", "queued_on_phone" -> "✓ "
-                    "pending_confirmation" -> "⏳ "
-                    "rejected", "error" -> "✕ "
-                    else -> "• "
-                }
-                val textColorRes = when (pill.status) {
-                    "ok", "queued_on_phone" -> R.color.lw_success
-                    "pending_confirmation" -> R.color.lw_accent
-                    "rejected", "error" -> R.color.lw_error
-                    else -> R.color.lw_text_primary
-                }
-                val chip = Chip(this).apply {
-                    text = prefix + pill.summary
-                    textSize = 12f
-                    isCheckable = false
-                    isClickable = false
-                    chipBackgroundColor = chipBg
-                    chipStrokeWidth = 0f
-                    setTextColor(ContextCompat.getColor(context, textColorRes))
-                    setEnsureMinTouchTargetSize(false)
-                }
-                chipGroup.addView(chip)
-            }
+            bindChipsToGroup(chipGroup, turn.toolCalls)
             chipScroll.addView(chipGroup)
             turnWrapper.addView(chipScroll)
         }
@@ -746,6 +939,37 @@ class AssistantActivity : AppCompatActivity() {
         }
         turnWrapper.addView(replyBox)
         return turnWrapper
+    }
+
+    private fun bindChipsToGroup(chipGroup: ChipGroup, pills: List<AgentToolCallInfo>) {
+        chipGroup.removeAllViews()
+        val chipBg = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.lw_pill_bg))
+        for (pill in pills) {
+            val prefix = when (pill.status) {
+                "ok", "queued_on_phone" -> "✓ "
+                "running" -> "⟳ "
+                "pending_confirmation" -> "⏳ "
+                "rejected", "error" -> "✕ "
+                else -> "• "
+            }
+            val textColorRes = when (pill.status) {
+                "ok", "queued_on_phone" -> R.color.lw_success
+                "running", "pending_confirmation" -> R.color.lw_accent
+                "rejected", "error" -> R.color.lw_error
+                else -> R.color.lw_text_primary
+            }
+            val chip = Chip(this).apply {
+                text = prefix + pill.summary
+                textSize = 12f
+                isCheckable = false
+                isClickable = false
+                chipBackgroundColor = chipBg
+                chipStrokeWidth = 0f
+                setTextColor(ContextCompat.getColor(context, textColorRes))
+                setEnsureMinTouchTargetSize(false)
+            }
+            chipGroup.addView(chip)
+        }
     }
 
     private fun adjustAgentScrollHeightAndScrollToBottom(scrollToBottom: Boolean = true) {
@@ -975,11 +1199,11 @@ class AssistantActivity : AppCompatActivity() {
 
     private fun renderArtwork(state: UiState) {
         binding.waveformView.visibility = visibleIf(state == UiState.RECORDING)
-        binding.transcribingSpinner.visibility =
-            visibleIf(state == UiState.TRANSCRIBING || state == UiState.AGENT_THINKING)
+        binding.transcribingSpinner.visibility = visibleIf(state == UiState.TRANSCRIBING)
         binding.transcriptInput.visibility =
             visibleIf(state == UiState.REVIEW || state == UiState.SENDING)
-        binding.agentResultScroll.visibility = visibleIf(state == UiState.AGENT_RESULT)
+        binding.agentResultScroll.visibility =
+            visibleIf(state == UiState.AGENT_RESULT || state == UiState.AGENT_THINKING)
         binding.setupRequiredSection.visibility = visibleIf(state == UiState.SETUP_REQUIRED)
         binding.sentCheckIcon.visibility = visibleIf(state == UiState.SENT)
     }
@@ -1040,7 +1264,7 @@ class AssistantActivity : AppCompatActivity() {
         bindControl(binding.controlCenter, controls.center)
         bindControl(binding.controlRight, controls.right)
 
-        val enabled = state != UiState.SENDING && state != UiState.AGENT_THINKING
+        val enabled = state != UiState.SENDING
         for (button in listOf(binding.controlLeft, binding.controlCenter, binding.controlRight)) {
             button.isEnabled = enabled
             button.alpha = if (enabled) 1f else DISABLED_ALPHA

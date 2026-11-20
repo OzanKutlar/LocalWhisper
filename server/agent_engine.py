@@ -8,6 +8,7 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -63,9 +64,14 @@ SYSTEM_PROMPT = (
     "the user's Android phone (alarms, timers, web search, opening URLs, launching apps).\n"
     "Guidelines:\n"
     "1. For multi-step typing, shortcuts, or editing on the PC, use `execute_pc_ahk_sequence`. "
-    "Inside `text`, use AutoHotkey brace tokens for special keys: {Enter}, {Tab}, {Backspace}, "
-    "{Esc}, {Up}, {Down}, {Left}, {Right}, {^a} (Ctrl+A), {^c} (Ctrl+C), {^v} (Ctrl+V), "
-    "{^s} (Ctrl+S), {^z} (Ctrl+Z), {^f} (Ctrl+F), {^+t}, etc. Everything outside braces is "
+    "Inside `text`, use AutoHotkey brace tokens for special keys and combined modifier shortcuts "
+    "(^ = Ctrl, + = Shift, ! = Alt, # = Win): {Enter}, {Tab}, {Backspace}, {Delete}, {Esc}, "
+    "{Up}, {Down}, {Left}, {Right}, combined named keys such as {^Enter} (Ctrl+Enter), "
+    "{+Enter} (Shift+Enter), {!Enter} (Alt+Enter), {^Backspace} (Ctrl+Backspace), "
+    "{^Tab} (Ctrl+Tab), {^+Tab} (Ctrl+Shift+Tab), {^Left} / {^Right} (Ctrl+Arrow), "
+    "{^+Left} / {^+Right} (Ctrl+Shift+Arrow), {!F4} (Alt+F4), and letter combos such as "
+    "{^a} (Ctrl+A), {^c} (Ctrl+C), {^v} (Ctrl+V), {^s} (Ctrl+S), {^z} (Ctrl+Z), "
+    "{^+z} (Ctrl+Shift+Z), {^f} (Ctrl+F), {^+t}, {#d}. Everything outside braces is "
     "typed literally.\n"
     "2. For pausing music, skipping tracks, or changing PC volume, use `control_pc_media`.\n"
     "3. For switching windows, launching PC apps, closing windows, or locking the PC, "
@@ -87,9 +93,12 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": "execute_pc_ahk_sequence",
             "description": (
                 "Execute a multi-step AutoHotkey v1.1 macro sequence on the target Windows PC. "
-                "Each step can type literal text or trigger AHK key tokens in braces like "
-                "{Enter}, {Tab}, {Backspace}, {^a}, {^c}, {^v}, {^s}, followed by an optional "
-                "wait_ms pause."
+                "Each step can type literal text or trigger AHK key tokens and combined modifier "
+                "keystrokes (^ = Ctrl, + = Shift, ! = Alt, # = Win) in braces such as {Enter}, "
+                "{Tab}, {Backspace}, {^Enter} (Ctrl+Enter), {+Enter} (Shift+Enter), "
+                "{!Enter} (Alt+Enter), {^Backspace} (Ctrl+Backspace), {^Tab} (Ctrl+Tab), "
+                "{^+Tab} (Ctrl+Shift+Tab), {^a} (Ctrl+A), {^c} (Ctrl+C), {^v} (Ctrl+V), "
+                "{^s} (Ctrl+S), {!F4} (Alt+F4), followed by an optional wait_ms pause."
             ),
             "parameters": {
                 "type": "object",
@@ -103,7 +112,9 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                                 "text": {
                                     "type": "string",
                                     "description": (
-                                        "Literal text and/or AHK brace tokens (e.g. '{^a}{Backspace}SELECT * FROM users;{Enter}')."
+                                        "Literal text and/or AHK brace tokens, including combined "
+                                        "modifier keystrokes like {^Enter} for Ctrl+Enter or {+Enter} "
+                                        "for Shift+Enter (e.g. '{^a}{Backspace}SELECT * FROM users;{^Enter}')."
                                     ),
                                 },
                                 "wait_ms": {
@@ -403,6 +414,92 @@ class AgentTurnResult:
         }
 
 
+class ThinkTagStreamParser:
+    """Incrementally splits streamed content chunks into (<think> thoughts, visible reply)."""
+
+    OPEN_TAG = "<think>"
+    CLOSE_TAG = "</think>"
+
+    def __init__(self) -> None:
+        self._in_think = False
+        self._buffer = ""
+        self._strip_leading_reply_ws = False
+
+    def feed(self, chunk: str) -> tuple[str, str]:
+        if not chunk:
+            return "", ""
+        self._buffer += chunk
+        think_out: list[str] = []
+        reply_out: list[str] = []
+
+        for _ in range(len(self._buffer) + 4):
+            if not self._buffer:
+                break
+            lower_buf = self._buffer.lower()
+            if not self._in_think:
+                if self._strip_leading_reply_ws:
+                    stripped = self._buffer.lstrip("\r\n")
+                    if not stripped:
+                        self._buffer = ""
+                        break
+                    self._buffer = stripped
+                    lower_buf = self._buffer.lower()
+                    self._strip_leading_reply_ws = False
+
+                idx = lower_buf.find(self.OPEN_TAG)
+                if idx >= 0:
+                    if idx > 0:
+                        reply_out.append(self._buffer[:idx])
+                    self._buffer = self._buffer[idx + len(self.OPEN_TAG) :]
+                    self._in_think = True
+                    continue
+
+                keep = self._partial_tag_suffix_len(lower_buf, self.OPEN_TAG)
+                emit_end = len(self._buffer) - keep
+                if emit_end > 0:
+                    reply_out.append(self._buffer[:emit_end])
+                    self._buffer = self._buffer[emit_end:]
+                break
+            else:
+                idx = lower_buf.find(self.CLOSE_TAG)
+                if idx >= 0:
+                    if idx > 0:
+                        think_out.append(self._buffer[:idx])
+                    self._buffer = self._buffer[idx + len(self.CLOSE_TAG) :]
+                    self._in_think = False
+                    self._strip_leading_reply_ws = True
+                    continue
+
+                keep = self._partial_tag_suffix_len(lower_buf, self.CLOSE_TAG)
+                emit_end = len(self._buffer) - keep
+                if emit_end > 0:
+                    think_out.append(self._buffer[:emit_end])
+                    self._buffer = self._buffer[emit_end:]
+                break
+
+        return "".join(think_out), "".join(reply_out)
+
+    def flush(self) -> tuple[str, str]:
+        if not self._buffer:
+            return "", ""
+        leftover = self._buffer
+        self._buffer = ""
+        if self._in_think:
+            return leftover, ""
+        if self._strip_leading_reply_ws:
+            leftover = leftover.lstrip("\r\n")
+            self._strip_leading_reply_ws = False
+        return "", leftover
+
+    @staticmethod
+    def _partial_tag_suffix_len(lower_text: str, tag: str) -> int:
+        max_check = min(len(lower_text), len(tag) - 1)
+        for length in range(max_check, 0, -1):
+            if lower_text.endswith(tag[:length]):
+                return length
+        return 0
+
+
 def extract_thinking_and_content(message: dict[str, Any]) -> tuple[str, str]:
     """Extracts thinking trace and clean response content from an LLM message."""
     thinking_parts: list[str] = []
@@ -596,6 +693,247 @@ class AgentEngine:
 
         return await self._continue_agent_loop(session, effective_client_id)
 
+    async def run_turn_stream(
+        self,
+        prompt: str,
+        client_id: str | None = None,
+        session_id: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        phone_screen: dict[str, Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        clean_prompt = prompt.strip()
+        if not clean_prompt:
+            raise ValueError("Agent prompt must not be empty")
+
+        session = await self._get_or_create_session(session_id, history)
+        if isinstance(phone_screen, dict) and phone_screen:
+            session.phone_screen = phone_screen
+        session.thinking_chunks.clear()
+        session.tool_records.clear()
+        session.android_actions.clear()
+        session.pending_confirmation = None
+        session.messages.append({"role": "user", "content": clean_prompt})
+        self._trim_session_messages(session)
+
+        yield {"type": "session", "session_id": session.session_id}
+        async for event in self._continue_agent_loop_stream(session, client_id):
+            yield event
+
+    async def confirm_tool_stream(
+        self,
+        session_id: str,
+        confirmation_id: str,
+        approved: bool,
+        client_id: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        session = await self._get_existing_session(session_id)
+        pending = session.pending_confirmation
+        if pending is None or pending.confirmation_id != confirmation_id:
+            raise ValueError("No matching pending tool confirmation found for this session")
+
+        session.pending_confirmation = None
+        effective_client_id = client_id or pending.client_id
+        yield {"type": "session", "session_id": session.session_id}
+
+        if approved:
+            running_summary = f"Running: {summarize_tool_call(pending.tool_name, pending.arguments)}"
+            yield {
+                "type": "tool_calls",
+                "tool_calls": [r.to_dict() for r in session.tool_records]
+                + [{"tool": pending.tool_name, "status": "running", "summary": running_summary}],
+            }
+            tool_output = await self._execute_single_tool(
+                session,
+                pending.tool_name,
+                pending.arguments,
+                effective_client_id,
+            )
+            yield {
+                "type": "tool_calls",
+                "tool_calls": [r.to_dict() for r in session.tool_records],
+            }
+            session.messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": pending.tool_call_id,
+                    "name": pending.tool_name,
+                    "content": json.dumps(tool_output),
+                }
+            )
+            gate_hit: AgentTurnResult | None = None
+            async for item in self._process_tool_calls_batch_stream(
+                session,
+                pending.remaining_tool_calls,
+                effective_client_id,
+            ):
+                if isinstance(item, AgentTurnResult):
+                    gate_hit = item
+                else:
+                    yield item
+            if gate_hit is not None:
+                yield {"type": "done", "result": gate_hit.to_dict()}
+                return
+        else:
+            summary = summarize_tool_call(pending.tool_name, pending.arguments)
+            session.tool_records.append(
+                ToolCallRecord(
+                    tool=pending.tool_name,
+                    status="rejected",
+                    summary=f"Rejected: {summary}",
+                )
+            )
+            yield {
+                "type": "tool_calls",
+                "tool_calls": [r.to_dict() for r in session.tool_records],
+            }
+            session.messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": pending.tool_call_id,
+                    "name": pending.tool_name,
+                    "content": json.dumps(
+                        {"ok": False, "rejected_by_user": True, "error": "User rejected the action."}
+                    ),
+                }
+            )
+            for skipped in pending.remaining_tool_calls:
+                skipped_id = str(skipped.get("id") or uuid.uuid4().hex[:8])
+                skipped_fn = skipped.get("function") or {}
+                skipped_name = str(skipped_fn.get("name") or "unknown")
+                session.messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": skipped_id,
+                        "name": skipped_name,
+                        "content": json.dumps({"ok": False, "skipped": True}),
+                    }
+                )
+
+        async for event in self._continue_agent_loop_stream(session, effective_client_id):
+            yield event
+
+    async def _continue_agent_loop_stream(
+        self,
+        session: AgentSession,
+        client_id: str | None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        last_reply = ""
+        for _iteration in range(MAX_TOOL_ITERATIONS):
+            if session.thinking_chunks:
+                yield {"type": "thinking_delta", "delta": "\n\n"}
+
+            assistant_msg: dict[str, Any] = {}
+            async for chunk_event in self._stream_chat_completion(session.messages):
+                ev_type = chunk_event.get("type")
+                if ev_type == "message_complete":
+                    assistant_msg = chunk_event.get("message") or {}
+                else:
+                    yield chunk_event
+
+            thought, clean_content = extract_thinking_and_content(assistant_msg)
+            if thought:
+                session.thinking_chunks.append(thought)
+            if clean_content:
+                last_reply = clean_content
+
+            tool_calls = assistant_msg.get("tool_calls")
+            if not isinstance(tool_calls, list) or not tool_calls:
+                session.messages.append({"role": "assistant", "content": clean_content})
+                final_res = self._build_result(
+                    session,
+                    status="completed",
+                    reply=last_reply or "Done.",
+                )
+                yield {"type": "done", "result": final_res.to_dict()}
+                return
+
+            session.messages.append(
+                {
+                    "role": "assistant",
+                    "content": clean_content or "",
+                    "tool_calls": tool_calls,
+                }
+            )
+            gate_result: AgentTurnResult | None = None
+            async for item in self._process_tool_calls_batch_stream(session, tool_calls, client_id):
+                if isinstance(item, AgentTurnResult):
+                    gate_result = item
+                else:
+                    yield item
+            if gate_result is not None:
+                yield {"type": "done", "result": gate_result.to_dict()}
+                return
+
+        final_res = self._build_result(
+            session,
+            status="completed",
+            reply=last_reply or "Completed maximum tool steps.",
+        )
+        yield {"type": "done", "result": final_res.to_dict()}
+
+    async def _process_tool_calls_batch_stream(
+        self,
+        session: AgentSession,
+        tool_calls: list[dict[str, Any]],
+        client_id: str | None,
+    ) -> AsyncIterator[dict[str, Any] | AgentTurnResult]:
+        for index, tc in enumerate(tool_calls):
+            tc_id = str(tc.get("id") or f"call_{uuid.uuid4().hex[:8]}")
+            fn_obj = tc.get("function") or {}
+            tool_name = str(fn_obj.get("name") or "").strip()
+            raw_args = fn_obj.get("arguments")
+            arguments = self._parse_arguments(raw_args)
+
+            needs_confirm, confirm_desc = check_confirmation_required(tool_name, arguments)
+            if needs_confirm:
+                confirmation = PendingConfirmation(
+                    confirmation_id=uuid.uuid4().hex[:12],
+                    tool_call_id=tc_id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    description=confirm_desc,
+                    remaining_tool_calls=tool_calls[index + 1 :],
+                    client_id=client_id,
+                )
+                session.pending_confirmation = confirmation
+                session.tool_records.append(
+                    ToolCallRecord(
+                        tool=tool_name,
+                        status="pending_confirmation",
+                        summary=f"Waiting approval: {summarize_tool_call(tool_name, arguments)}",
+                    )
+                )
+                yield {
+                    "type": "tool_calls",
+                    "tool_calls": [r.to_dict() for r in session.tool_records],
+                }
+                yield self._build_result(
+                    session,
+                    status="confirmation_required",
+                    reply=confirm_desc,
+                )
+                return
+
+            running_label = f"Running: {summarize_tool_call(tool_name, arguments)}"
+            yield {
+                "type": "tool_calls",
+                "tool_calls": [r.to_dict() for r in session.tool_records]
+                + [{"tool": tool_name, "status": "running", "summary": running_label}],
+            }
+            tool_output = await self._execute_single_tool(session, tool_name, arguments, client_id)
+            yield {
+                "type": "tool_calls",
+                "tool_calls": [r.to_dict() for r in session.tool_records],
+            }
+            session.messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "name": tool_name,
+                    "content": json.dumps(tool_output),
+                }
+            )
+
     async def _continue_agent_loop(
         self,
         session: AgentSession,
@@ -768,6 +1106,221 @@ class AgentEngine:
         if not isinstance(message, dict):
             raise RuntimeError("LLM server response missing message object")
         return message
+
+    async def _stream_chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> AsyncIterator[dict[str, Any]]:
+        # If a test subclass overrode _request_chat_completion, use it and emit synthetic stream deltas
+        if type(self)._request_chat_completion is not AgentEngine._request_chat_completion:
+            msg = await self._request_chat_completion(messages)
+            thought, clean_content = extract_thinking_and_content(msg)
+            if thought:
+                yield {"type": "thinking_delta", "delta": thought}
+            if clean_content:
+                yield {"type": "reply_delta", "delta": clean_content}
+            yield {"type": "message_complete", "message": msg}
+            return
+
+        url = f"{self.llm_base_url}/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.llm_api_key}",
+        }
+        base_payload: dict[str, Any] = {
+            "model": self.llm_model,
+            "messages": messages,
+            "tools": AGENT_TOOLS,
+            "tool_choice": "auto",
+            "stream": True,
+        }
+        payload_with_thinking = dict(base_payload)
+        if self.enable_thinking:
+            payload_with_thinking["chat_template_kwargs"] = {"enable_thinking": True}
+
+        parser = ThinkTagStreamParser()
+        reasoning_parts: list[str] = []
+        content_parts: list[str] = []
+        tool_calls_by_index: dict[int, dict[str, Any]] = {}
+
+        async with httpx.AsyncClient(timeout=LLM_TIMEOUT_S) as client:
+            try:
+                async with client.stream(
+                    "POST",
+                    url,
+                    headers=headers,
+                    json=payload_with_thinking,
+                ) as response:
+                    if response.status_code == 400 and self.enable_thinking:
+                        # Fallback to standard OpenAI payload if extra fields rejected
+                        pass
+                    elif response.status_code >= 400:
+                        body_bytes = await response.aread()
+                        detail = body_bytes.decode("utf-8", errors="replace")[:300]
+                        raise RuntimeError(
+                            f"LLM server returned HTTP {response.status_code}: {detail}"
+                        )
+                    else:
+                        async for event in self._consume_sse_lines(
+                            response,
+                            parser,
+                            reasoning_parts,
+                            content_parts,
+                            tool_calls_by_index,
+                        ):
+                            yield event
+                        assembled = self._assemble_streamed_message(
+                            reasoning_parts,
+                            content_parts,
+                            tool_calls_by_index,
+                        )
+                        yield {"type": "message_complete", "message": assembled}
+                        return
+
+                async with client.stream(
+                    "POST",
+                    url,
+                    headers=headers,
+                    json=base_payload,
+                ) as fallback_resp:
+                    if fallback_resp.status_code >= 400:
+                        body_bytes = await fallback_resp.aread()
+                        detail = body_bytes.decode("utf-8", errors="replace")[:300]
+                        raise RuntimeError(
+                            f"LLM server returned HTTP {fallback_resp.status_code}: {detail}"
+                        )
+                    async for event in self._consume_sse_lines(
+                        fallback_resp,
+                        parser,
+                        reasoning_parts,
+                        content_parts,
+                        tool_calls_by_index,
+                    ):
+                        yield event
+                    assembled = self._assemble_streamed_message(
+                        reasoning_parts,
+                        content_parts,
+                        tool_calls_by_index,
+                    )
+                    yield {"type": "message_complete", "message": assembled}
+            except httpx.HTTPError as exc:
+                raise RuntimeError(
+                    f"Could not reach thinking LLM at {url}. "
+                    f"Ensure your llama-server is running: {exc}"
+                ) from exc
+
+    async def _consume_sse_lines(
+        self,
+        response: httpx.Response,
+        parser: ThinkTagStreamParser,
+        reasoning_parts: list[str],
+        content_parts: list[str],
+        tool_calls_by_index: dict[int, dict[str, Any]],
+    ) -> AsyncIterator[dict[str, Any]]:
+        async for raw_line in response.aiter_lines():
+            line = raw_line.strip()
+            if not line or not line.startswith("data:"):
+                continue
+            data_str = line[5:].strip()
+            if data_str == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+
+            choices = chunk.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            first_choice = choices[0]
+            delta = first_choice.get("delta")
+            if not isinstance(delta, dict):
+                # Non-streaming fallback if server returned full message in one chunk
+                full_msg = first_choice.get("message")
+                if isinstance(full_msg, dict):
+                    thought, clean_c = extract_thinking_and_content(full_msg)
+                    if thought:
+                        reasoning_parts.append(thought)
+                        yield {"type": "thinking_delta", "delta": thought}
+                    if clean_c:
+                        content_parts.append(clean_c)
+                        yield {"type": "reply_delta", "delta": clean_c}
+                    tcs = full_msg.get("tool_calls")
+                    if isinstance(tcs, list):
+                        for idx, tc in enumerate(tcs):
+                            tool_calls_by_index[idx] = tc
+                continue
+
+            for r_key in ("reasoning_content", "thinking", "reasoning"):
+                r_val = delta.get(r_key)
+                if isinstance(r_val, str) and r_val:
+                    reasoning_parts.append(r_val)
+                    yield {"type": "thinking_delta", "delta": r_val}
+
+            c_val = delta.get("content")
+            if isinstance(c_val, str) and c_val:
+                think_delta, reply_delta = parser.feed(c_val)
+                if think_delta:
+                    reasoning_parts.append(think_delta)
+                    yield {"type": "thinking_delta", "delta": think_delta}
+                if reply_delta:
+                    content_parts.append(reply_delta)
+                    yield {"type": "reply_delta", "delta": reply_delta}
+
+            tc_deltas = delta.get("tool_calls")
+            if isinstance(tc_deltas, list):
+                for tc_delta in tc_deltas:
+                    if not isinstance(tc_delta, dict):
+                        continue
+                    idx = int(tc_delta.get("index", 0))
+                    entry = tool_calls_by_index.setdefault(
+                        idx,
+                        {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    if tc_delta.get("id"):
+                        entry["id"] += str(tc_delta["id"])
+                    fn_delta = tc_delta.get("function")
+                    if isinstance(fn_delta, dict):
+                        if fn_delta.get("name"):
+                            entry["function"]["name"] += str(fn_delta["name"])
+                        if fn_delta.get("arguments"):
+                            entry["function"]["arguments"] += str(fn_delta["arguments"])
+
+        flush_think, flush_reply = parser.flush()
+        if flush_think:
+            reasoning_parts.append(flush_think)
+            yield {"type": "thinking_delta", "delta": flush_think}
+        if flush_reply:
+            content_parts.append(flush_reply)
+            yield {"type": "reply_delta", "delta": flush_reply}
+
+    @staticmethod
+    def _assemble_streamed_message(
+        reasoning_parts: list[str],
+        content_parts: list[str],
+        tool_calls_by_index: dict[int, dict[str, Any]],
+    ) -> dict[str, Any]:
+        msg: dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(content_parts).strip(),
+        }
+        reasoning_text = "".join(reasoning_parts).strip()
+        if reasoning_text:
+            msg["reasoning_content"] = reasoning_text
+        if tool_calls_by_index:
+            ordered = [
+                tool_calls_by_index[idx]
+                for idx in sorted(tool_calls_by_index.keys())
+            ]
+            for tc in ordered:
+                if not tc.get("id"):
+                    tc["id"] = f"call_{uuid.uuid4().hex[:8]}"
+            msg["tool_calls"] = ordered
+        return msg
 
     def _build_result(
         self,

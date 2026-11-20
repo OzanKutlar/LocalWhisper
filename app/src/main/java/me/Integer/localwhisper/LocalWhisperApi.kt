@@ -73,6 +73,13 @@ data class AgentResponse(
     val pendingConfirmation: PendingConfirmationInfo?
 )
 
+data class AgentStreamProgress(
+    val sessionId: String,
+    val thinking: String,
+    val reply: String,
+    val toolCalls: List<AgentToolCallInfo>
+)
+
 class LocalWhisperApi {
 
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
@@ -246,6 +253,195 @@ class LocalWhisperApi {
             .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
         executeJsonRequest(request, ::parseAgentResponse)
+    }
+
+    suspend fun runAgentStream(
+        baseUrl: String,
+        prompt: String,
+        clientId: String?,
+        sessionId: String?,
+        priorTurns: List<AgentChatTurn> = emptyList(),
+        phoneScreen: JSONObject? = null,
+        onProgress: suspend (AgentStreamProgress) -> Unit
+    ): Result<AgentResponse> = withContext(Dispatchers.IO) {
+        if (prompt.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("Prompt must not be empty"))
+        }
+        val payload = JSONObject().apply {
+            put("prompt", prompt)
+            if (!clientId.isNullOrBlank()) {
+                put("client_id", clientId)
+            }
+            if (!sessionId.isNullOrBlank()) {
+                put("session_id", sessionId)
+            }
+            if (priorTurns.isNotEmpty()) {
+                val historyArray = JSONArray()
+                for (turn in priorTurns) {
+                    if (turn.userPrompt.isNotBlank()) {
+                        historyArray.put(
+                            JSONObject().apply {
+                                put("role", "user")
+                                put("content", turn.userPrompt)
+                            }
+                        )
+                    }
+                    if (turn.reply.isNotBlank()) {
+                        historyArray.put(
+                            JSONObject().apply {
+                                put("role", "assistant")
+                                put("content", turn.reply)
+                            }
+                        )
+                    }
+                }
+                put("history", historyArray)
+            }
+            if (phoneScreen != null) {
+                put("phone_screen", phoneScreen)
+            }
+        }
+        val request = Request.Builder()
+            .url("$baseUrl/api/agent/stream")
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        executeNdjsonStreamRequest(request, sessionId.orEmpty(), onProgress)
+    }
+
+    suspend fun confirmAgentActionStream(
+        baseUrl: String,
+        sessionId: String,
+        confirmationId: String,
+        approved: Boolean,
+        clientId: String?,
+        onProgress: suspend (AgentStreamProgress) -> Unit
+    ): Result<AgentResponse> = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("session_id", sessionId)
+            put("confirmation_id", confirmationId)
+            put("approved", approved)
+            if (!clientId.isNullOrBlank()) {
+                put("client_id", clientId)
+            }
+        }
+        val request = Request.Builder()
+            .url("$baseUrl/api/agent/confirm/stream")
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        executeNdjsonStreamRequest(request, sessionId, onProgress)
+    }
+
+    private suspend fun executeNdjsonStreamRequest(
+        request: Request,
+        initialSessionId: String,
+        onProgress: suspend (AgentStreamProgress) -> Unit
+    ): Result<AgentResponse> {
+        return try {
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val bodyText = response.body?.string().orEmpty()
+                    val detail = extractErrorDetail(bodyText, response.code)
+                    return Result.failure(IOException(detail))
+                }
+                val source = response.body?.source()
+                    ?: return Result.failure(IOException("Empty stream from server"))
+
+                var currentSessionId = initialSessionId
+                val thinkingBuilder = StringBuilder()
+                val replyBuilder = StringBuilder()
+                var currentTools: List<AgentToolCallInfo> = emptyList()
+                var finalResponse: AgentResponse? = null
+
+                while (!source.exhausted()) {
+                    val line = source.readUtf8Line()?.trim().orEmpty()
+                    if (line.isEmpty()) continue
+                    val event = try {
+                        JSONObject(line)
+                    } catch (_: Exception) {
+                        continue
+                    }
+                    when (event.optString("type", "")) {
+                        "session" -> {
+                            currentSessionId = event.optString("session_id", currentSessionId)
+                        }
+                        "thinking_delta" -> {
+                            val delta = event.optString("delta", "")
+                            if (delta.isNotEmpty()) {
+                                thinkingBuilder.append(delta)
+                                onProgress(
+                                    AgentStreamProgress(
+                                        sessionId = currentSessionId,
+                                        thinking = thinkingBuilder.toString(),
+                                        reply = replyBuilder.toString(),
+                                        toolCalls = currentTools
+                                    )
+                                )
+                            }
+                        }
+                        "reply_delta" -> {
+                            val delta = event.optString("delta", "")
+                            if (delta.isNotEmpty()) {
+                                replyBuilder.append(delta)
+                                onProgress(
+                                    AgentStreamProgress(
+                                        sessionId = currentSessionId,
+                                        thinking = thinkingBuilder.toString(),
+                                        reply = replyBuilder.toString(),
+                                        toolCalls = currentTools
+                                    )
+                                )
+                            }
+                        }
+                        "tool_calls" -> {
+                            currentTools = parseToolCallsArray(event.optJSONArray("tool_calls"))
+                            onProgress(
+                                AgentStreamProgress(
+                                    sessionId = currentSessionId,
+                                    thinking = thinkingBuilder.toString(),
+                                    reply = replyBuilder.toString(),
+                                    toolCalls = currentTools
+                                )
+                            )
+                        }
+                        "done" -> {
+                            val resultObj = event.optJSONObject("result")
+                            if (resultObj != null) {
+                                finalResponse = parseAgentResponse(resultObj)
+                            }
+                        }
+                        "error" -> {
+                            val detail = event.optString("detail", "Agent stream error")
+                            return Result.failure(IOException(detail))
+                        }
+                    }
+                }
+
+                if (finalResponse != null) {
+                    Result.success(finalResponse)
+                } else {
+                    Result.failure(IOException("Agent stream ended without a completion result"))
+                }
+            }
+        } catch (exc: Exception) {
+            Result.failure(exc)
+        }
+    }
+
+    private fun parseToolCallsArray(toolArray: JSONArray?): List<AgentToolCallInfo> {
+        val tools = ArrayList<AgentToolCallInfo>(toolArray?.length() ?: 0)
+        if (toolArray != null) {
+            for (i in 0 until toolArray.length()) {
+                val item = toolArray.optJSONObject(i) ?: continue
+                tools.add(
+                    AgentToolCallInfo(
+                        tool = item.optString("tool", ""),
+                        status = item.optString("status", "ok"),
+                        summary = item.optString("summary", item.optString("tool", "tool"))
+                    )
+                )
+            }
+        }
+        return tools
     }
 
     private fun parseAgentResponse(json: JSONObject): AgentResponse {
