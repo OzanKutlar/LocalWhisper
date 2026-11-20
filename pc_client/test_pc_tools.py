@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pc_tools import (  # noqa: E402
     build_media_ahk_token,
+    filter_windows_list,
     run_ahk_sequence,
     validate_http_url,
 )
@@ -73,6 +74,40 @@ class AhkSequenceTests(unittest.TestCase):
                 False,
                 lambda *_: None,
             )
+
+
+class WindowListFilterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sample_windows = [
+            {
+                "hwnd": "0x101",
+                "pid": 1200,
+                "process_name": "Code.exe",
+                "title": "main.py - LocalWhisper - Visual Studio Code",
+                "class_name": "Chrome_WidgetWin_1",
+                "is_foreground": True,
+                "state": "maximized",
+            },
+            {
+                "hwnd": "0x202",
+                "pid": 3400,
+                "process_name": "chrome.exe",
+                "title": "PyTorch Documentation - Google Chrome",
+                "class_name": "Chrome_WidgetWin_1",
+                "is_foreground": False,
+                "state": "minimized",
+            },
+        ]
+
+    def test_filters_by_query_tokens(self) -> None:
+        matched = filter_windows_list(self.sample_windows, query="chrome pytorch")
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["pid"], 3400)
+
+    def test_excludes_minimized_when_requested(self) -> None:
+        matched = filter_windows_list(self.sample_windows, query="", include_minimized=False)
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["process_name"], "Code.exe")
 
 
 if __name__ == "__main__":

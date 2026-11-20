@@ -72,7 +72,12 @@ SYSTEM_PROMPT = (
     "use `manage_pc_app`. For opening websites on the PC, use `open_pc_url`.\n"
     "4. For setting alarms, timers, searching the web on the phone, or opening phone apps, "
     "use `trigger_android_intent`.\n"
-    "5. Keep your final spoken/written reply concise and helpful."
+    "5. To search or list open windows and processes on the PC as a JSON object (like `ps`), "
+    "use `list_pc_windows`.\n"
+    "6. To view what is currently displayed on the PC screen (active window, controls, and live "
+    "screen OCR text), use `inspect_pc_screen`. To view what is displayed on the user's Android "
+    "phone screen (active app, messages, UI elements, focused text input), use `inspect_phone_screen`.\n"
+    "7. Keep your final spoken/written reply concise and helpful."
 )
 
 AGENT_TOOLS: list[dict[str, Any]] = [
@@ -246,6 +251,92 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_pc_windows",
+            "description": (
+                "Search and list active/open windows and their processes on the target Windows PC "
+                "like a `ps` tool. Returns a structured JSON object containing window handles (hwnd), "
+                "PIDs, process executable names, window titles, class names, state "
+                "(normal/maximized/minimized), foreground status, and screen bounds."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Optional search filter matching window title, process name (e.g. 'chrome', 'Code.exe'), "
+                            "window class, or PID. Leave empty to list all open windows."
+                        ),
+                        "default": "",
+                    },
+                    "include_minimized": {
+                        "type": "boolean",
+                        "description": "Whether to include minimized windows in the JSON results.",
+                        "default": True,
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_pc_screen",
+            "description": (
+                "View the screen of the target Windows PC. Returns a JSON object with the active "
+                "foreground window, visible windows on screen, accessible UI control text, and "
+                "live screen OCR text lines read from the display."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_query": {
+                        "type": "string",
+                        "description": (
+                            "Optional window title or process name to inspect specifically. "
+                            "Leave empty to inspect the active foreground window and full primary screen."
+                        ),
+                        "default": "",
+                    },
+                    "include_ocr": {
+                        "type": "boolean",
+                        "description": "Capture the PC screen and extract all visible text via OCR.",
+                        "default": True,
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_phone_screen",
+            "description": (
+                "View the current screen of the user's Android phone. Returns a structured JSON "
+                "object containing the active phone app name, package name, focused text field, "
+                "visible on-screen text lines, and interactive UI elements."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Optional case-insensitive filter to search for specific text or UI "
+                            "elements on the phone screen. Leave empty to view the full phone screen."
+                        ),
+                        "default": "",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -285,6 +376,7 @@ class AgentSession:
     thinking_chunks: list[str] = field(default_factory=list)
     tool_records: list[ToolCallRecord] = field(default_factory=list)
     android_actions: list[dict[str, Any]] = field(default_factory=list)
+    phone_screen: dict[str, Any] = field(default_factory=dict)
     pending_confirmation: PendingConfirmation | None = None
     updated_at: float = field(default_factory=time.time)
 
@@ -382,6 +474,15 @@ def summarize_tool_call(tool_name: str, arguments: dict[str, Any]) -> str:
             or (f"{arguments.get('seconds')}s" if arguments.get("seconds") else "")
         )
         return f"Phone {intent_type}: {detail}" if detail else f"Phone {intent_type}"
+    if tool_name == "list_pc_windows":
+        q = str(arguments.get("query", "")).strip()
+        return f"PC Windows ('{q}')" if q else "PC Windows (ps)"
+    if tool_name == "inspect_pc_screen":
+        q = str(arguments.get("window_query", "")).strip()
+        return f"View PC Screen ('{q}')" if q else "View PC Screen"
+    if tool_name == "inspect_phone_screen":
+        q = str(arguments.get("query", "")).strip()
+        return f"View Phone Screen ('{q}')" if q else "View Phone Screen"
     return tool_name
 
 
@@ -410,12 +511,15 @@ class AgentEngine:
         client_id: str | None = None,
         session_id: str | None = None,
         history: list[dict[str, str]] | None = None,
+        phone_screen: dict[str, Any] | None = None,
     ) -> AgentTurnResult:
         clean_prompt = prompt.strip()
         if not clean_prompt:
             raise ValueError("Agent prompt must not be empty")
 
         session = await self._get_or_create_session(session_id, history)
+        if isinstance(phone_screen, dict) and phone_screen:
+            session.phone_screen = phone_screen
         session.thinking_chunks.clear()
         session.tool_records.clear()
         session.android_actions.clear()
@@ -585,6 +689,14 @@ class AgentEngine:
         client_id: str | None,
     ) -> dict[str, Any]:
         summary = summarize_tool_call(tool_name, arguments)
+        if tool_name == "inspect_phone_screen":
+            query = str(arguments.get("query", "")).strip().lower()
+            screen_data = self._filter_phone_screen(session.phone_screen, query)
+            session.tool_records.append(
+                ToolCallRecord(tool=tool_name, status="ok", summary=summary)
+            )
+            return {"ok": True, "phone_screen": screen_data}
+
         if tool_name == "trigger_android_intent":
             action_payload = {
                 "intent_type": str(arguments.get("intent_type", "")),
@@ -727,6 +839,29 @@ class AgentEngine:
         system_msg = session.messages[0]
         recent = session.messages[-(MAX_SESSION_MESSAGES - 1) :]
         session.messages = [system_msg] + recent
+
+    @staticmethod
+    def _filter_phone_screen(screen: dict[str, Any], query: str) -> dict[str, Any]:
+        if not screen:
+            return {
+                "accessibility_enabled": False,
+                "note": "No phone screen snapshot was provided in this request.",
+            }
+        if not query:
+            return screen
+
+        filtered = dict(screen)
+        raw_texts = screen.get("visible_texts")
+        if isinstance(raw_texts, list):
+            filtered["visible_texts"] = [
+                t for t in raw_texts if query in str(t).lower()
+            ]
+        raw_elements = screen.get("ui_elements")
+        if isinstance(raw_elements, list):
+            filtered["ui_elements"] = [
+                el for el in raw_elements if query in json.dumps(el).lower()
+            ]
+        return filtered
 
     @staticmethod
     def _parse_arguments(raw_args: Any) -> dict[str, Any]:

@@ -214,12 +214,78 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_inspects_phone_and_pc_screens_and_window_list(self) -> None:
+        hub = FakeClientHub()
+        scripted = [
+            {
+                "role": "assistant",
+                "reasoning_content": "Let me check the phone screen and list PC windows.",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_phone",
+                        "function": {
+                            "name": "inspect_phone_screen",
+                            "arguments": '{"query": "WhatsApp"}',
+                        },
+                    },
+                    {
+                        "id": "call_ps",
+                        "function": {
+                            "name": "list_pc_windows",
+                            "arguments": '{"query": "chrome", "include_minimized": true}',
+                        },
+                    },
+                    {
+                        "id": "call_pc_screen",
+                        "function": {
+                            "name": "inspect_pc_screen",
+                            "arguments": '{"include_ocr": true}',
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "You have WhatsApp open on your phone and Chrome open on your PC.",
+            },
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        phone_snapshot = {
+            "accessibility_enabled": True,
+            "app_name": "WhatsApp",
+            "package_name": "com.whatsapp",
+            "visible_texts": ["WhatsApp", "Hey, are we still meeting at 5?"],
+        }
+        result = await engine.run_turn(
+            prompt="What is on my phone and PC screen?",
+            phone_screen=phone_snapshot,
+        )
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(len(hub.calls), 2)
+        self.assertEqual(hub.calls[0][0], "list_pc_windows")
+        self.assertEqual(hub.calls[1][0], "inspect_pc_screen")
+        self.assertEqual(len(result.tool_calls), 3)
+        self.assertEqual(result.tool_calls[0]["tool"], "inspect_phone_screen")
+
     def test_summarize_tool_call_formats_labels(self) -> None:
         label = summarize_tool_call(
             "execute_pc_ahk_sequence",
             {"steps": [{"text": "{^a}"}, {"text": "{^c}"}]},
         )
         self.assertEqual(label, "AHK macro (2 steps)")
+        self.assertEqual(
+            summarize_tool_call("list_pc_windows", {"query": "code"}),
+            "PC Windows ('code')",
+        )
+        self.assertEqual(
+            summarize_tool_call("inspect_pc_screen", {}),
+            "View PC Screen",
+        )
+        self.assertEqual(
+            summarize_tool_call("inspect_phone_screen", {}),
+            "View Phone Screen",
+        )
 
 
 if __name__ == "__main__":

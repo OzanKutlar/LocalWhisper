@@ -499,6 +499,7 @@ class AssistantActivity : AppCompatActivity() {
         setUiState(UiState.AGENT_THINKING)
 
         val targetClientId = if (isLocalTargetSelected()) null else selectedClient?.id
+        val phoneScreenSnapshot = LocalTypingService.capturePhoneScreenSnapshot()
         activeJob?.cancel()
         activeJob = lifecycleScope.launch {
             val result = api.runAgent(
@@ -506,7 +507,8 @@ class AssistantActivity : AppCompatActivity() {
                 prompt = prompt,
                 clientId = targetClientId,
                 sessionId = agentSessionId,
-                priorTurns = existingTurns
+                priorTurns = existingTurns,
+                phoneScreen = phoneScreenSnapshot
             )
             result.onSuccess { response ->
                 handleAgentResponse(response, isConfirmationResume = false)

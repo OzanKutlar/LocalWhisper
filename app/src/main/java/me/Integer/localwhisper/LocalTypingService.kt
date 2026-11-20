@@ -2,14 +2,19 @@ package me.Integer.localwhisper
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
 import androidx.annotation.StringRes
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Types text sent to the "This phone" target into the text field that had input focus
@@ -26,6 +31,7 @@ class LocalTypingService : AccessibilityService() {
     private val attemptRunnable = Runnable { runAttempt() }
     private var pendingText: String? = null
     private var attemptsLeft = 0
+    private var lastExternalCaptureUptimeMs = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -33,7 +39,14 @@ class LocalTypingService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Not event driven: insertion runs on the retry schedule started by enqueue().
+        val pkg = event?.packageName?.toString() ?: return
+        if (pkg == packageName || pkg == "com.android.systemui") return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastExternalCaptureUptimeMs < SNAPSHOT_THROTTLE_MS) return
+        val root = rootInActiveWindow ?: return
+        if (root.packageName?.toString() == packageName) return
+        lastExternalCaptureUptimeMs = now
+        cachedExternalSnapshot = buildWindowSnapshot(root)
     }
 
     override fun onInterrupt() {
@@ -222,15 +235,160 @@ class LocalTypingService : AccessibilityService() {
         Toast.makeText(this, shownRes, Toast.LENGTH_LONG).show()
     }
 
+    // ------------------------------------------------------------ Screen Snapshot
+
+    private fun captureBestSnapshot(): JSONObject? {
+        return try {
+            val externalRoot = findUnderlyingAppRoot()
+            if (externalRoot != null) {
+                val fresh = buildWindowSnapshot(externalRoot)
+                cachedExternalSnapshot = fresh
+                fresh
+            } else {
+                cachedExternalSnapshot
+            }
+        } catch (exc: Exception) {
+            Log.w(TAG, "Could not capture live phone screen snapshot", exc)
+            cachedExternalSnapshot
+        }
+    }
+
+    private fun findUnderlyingAppRoot(): AccessibilityNodeInfo? {
+        val activeRoot = rootInActiveWindow
+        if (activeRoot != null) {
+            val pkg = activeRoot.packageName?.toString().orEmpty()
+            if (pkg.isNotEmpty() && pkg != packageName && pkg != "com.android.systemui") {
+                return activeRoot
+            }
+        }
+        val interactiveWindows = try {
+            windows
+        } catch (_: Exception) {
+            null
+        }
+        if (interactiveWindows != null) {
+            for (window in interactiveWindows) {
+                if (window.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
+                val root = window.root ?: continue
+                val pkg = root.packageName?.toString().orEmpty()
+                if (pkg.isNotEmpty() && pkg != packageName) {
+                    return root
+                }
+            }
+        }
+        return null
+    }
+
+    private fun buildWindowSnapshot(root: AccessibilityNodeInfo): JSONObject {
+        val pkgName = root.packageName?.toString().orEmpty()
+        val appLabel = resolveAppLabel(pkgName)
+        val visibleTexts = JSONArray()
+        val uiElements = JSONArray()
+        val seenTexts = HashSet<String>()
+
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var scanned = 0
+        val boundsRect = Rect()
+
+        while (queue.isNotEmpty() && scanned < MAX_SCREEN_NODES_SCANNED) {
+            val node = queue.removeFirst()
+            scanned++
+            if (!node.isVisibleToUser) continue
+
+            val rawText = if (node.isPassword) "" else node.text?.toString()?.trim().orEmpty()
+            val desc = node.contentDescription?.toString()?.trim().orEmpty()
+            val hint = node.hintText?.toString()?.trim().orEmpty()
+            val viewId = node.viewIdResourceName?.substringAfterLast('/')?.trim().orEmpty()
+            val role = node.className?.toString()?.substringAfterLast('.')?.trim().orEmpty()
+
+            if (rawText.isNotEmpty() && seenTexts.add(rawText)) {
+                visibleTexts.put(rawText)
+            } else if (desc.isNotEmpty() && seenTexts.add(desc)) {
+                visibleTexts.put(desc)
+            }
+
+            val isInteresting = rawText.isNotEmpty() || desc.isNotEmpty() ||
+                node.isEditable || node.isClickable
+            if (isInteresting && uiElements.length() < MAX_UI_ELEMENTS_RETURNED) {
+                node.getBoundsInScreen(boundsRect)
+                uiElements.put(
+                    JSONObject().apply {
+                        put("role", role)
+                        if (rawText.isNotEmpty()) put("text", rawText)
+                        if (desc.isNotEmpty()) put("content_desc", desc)
+                        if (hint.isNotEmpty()) put("hint", hint)
+                        if (viewId.isNotEmpty()) put("view_id", viewId)
+                        put("clickable", node.isClickable)
+                        put("editable", node.isEditable)
+                        put("focused", node.isFocused || node.isAccessibilityFocused)
+                        put(
+                            "bounds",
+                            JSONObject().apply {
+                                put("left", boundsRect.left)
+                                put("top", boundsRect.top)
+                                put("right", boundsRect.right)
+                                put("bottom", boundsRect.bottom)
+                            }
+                        )
+                    }
+                )
+            }
+
+            val childCount = minOf(node.childCount, MAX_CHILDREN_PER_NODE)
+            for (i in 0 until childCount) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
+        }
+
+        val focusedField = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        val focusedJson = if (focusedField != null) {
+            JSONObject().apply {
+                put("editable", focusedField.isEditable)
+                put("text", if (focusedField.isPassword) "" else currentRealText(focusedField))
+                put("hint", focusedField.hintText?.toString().orEmpty())
+            }
+        } else null
+
+        return JSONObject().apply {
+            put("accessibility_enabled", true)
+            put("package_name", pkgName)
+            put("app_name", appLabel)
+            put("captured_at_ms", System.currentTimeMillis())
+            if (focusedJson != null) {
+                put("focused_input", focusedJson)
+            }
+            put("visible_texts", visibleTexts)
+            put("ui_elements", uiElements)
+        }
+    }
+
+    private fun resolveAppLabel(pkgName: String): String {
+        if (pkgName.isEmpty()) return "Unknown"
+        return try {
+            val info = packageManager.getApplicationInfo(pkgName, 0)
+            packageManager.getApplicationLabel(info)?.toString().orEmpty().ifEmpty { pkgName }
+        } catch (_: Exception) {
+            pkgName
+        }
+    }
+
     companion object {
         private const val TAG = "LW-LocalTyping"
         private const val FIRST_ATTEMPT_DELAY_MS = 300L
         private const val RETRY_INTERVAL_MS = 150L
         private const val MAX_ATTEMPTS = 30 // ~4.5 s, covers the overlay close animation
         private const val MAX_CHILDREN_SCANNED = 8 // per level, when looking for a placeholder label
+        private const val SNAPSHOT_THROTTLE_MS = 400L
+        private const val MAX_SCREEN_NODES_SCANNED = 140
+        private const val MAX_UI_ELEMENTS_RETURNED = 65
+        private const val MAX_CHILDREN_PER_NODE = 20
 
         @Volatile
         private var instance: LocalTypingService? = null
+
+        @Volatile
+        private var cachedExternalSnapshot: JSONObject? = null
 
         /** Queues text to type into the focused field. Returns false when the service is off. Main thread only. */
         fun enqueue(text: String): Boolean {
@@ -238,6 +396,25 @@ class LocalTypingService : AccessibilityService() {
             val service = instance ?: return false
             service.begin(text)
             return true
+        }
+
+        /** Captures a structured JSON snapshot of the active Android phone screen for the Agent. */
+        fun capturePhoneScreenSnapshot(): JSONObject {
+            val service = instance
+            if (service == null) {
+                return JSONObject().apply {
+                    put("accessibility_enabled", false)
+                    put(
+                        "note",
+                        "LocalWhisper typing Accessibility service is disabled on the phone. " +
+                            "Enable 'Type on this phone' in LocalWhisper settings to let the agent view the phone screen."
+                    )
+                }
+            }
+            return service.captureBestSnapshot() ?: JSONObject().apply {
+                put("accessibility_enabled", true)
+                put("note", "No external phone app screen snapshot is available yet.")
+            }
         }
     }
 }

@@ -179,7 +179,8 @@ class LocalWhisperApi {
         prompt: String,
         clientId: String?,
         sessionId: String?,
-        priorTurns: List<AgentChatTurn> = emptyList()
+        priorTurns: List<AgentChatTurn> = emptyList(),
+        phoneScreen: JSONObject? = null
     ): Result<AgentResponse> = withContext(Dispatchers.IO) {
         if (prompt.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("Prompt must not be empty"))
@@ -213,6 +214,9 @@ class LocalWhisperApi {
                     }
                 }
                 put("history", historyArray)
+            }
+            if (phoneScreen != null) {
+                put("phone_screen", phoneScreen)
             }
         }
         val request = Request.Builder()
