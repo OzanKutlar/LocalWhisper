@@ -17,6 +17,17 @@
     <string name="row_language_auto">Auto-detect</string>
     <string name="row_test_connection">Test connection</string>
     <string name="row_test_connection_hint">Check the GPU, model and connected PCs</string>
+    <string name="row_update_server">Update server</string>
+    <string name="row_update_server_hint">Close server, run git pull, and relaunch</string>
+    <string name="update_confirm_title">Update &amp; restart server?</string>
+    <string name="update_confirm_message">The server will close itself, run git pull in its repository directory, and launch itself again.</string>
+    <string name="update_confirm_button">Update now</string>
+    <string name="update_stage_closing">[1/4] Closing server…</string>
+    <string name="update_stage_git_pull">[2/4] Server closed — running git pull…</string>
+    <string name="update_stage_relaunching">[3/4] Relaunching server &amp; loading CUDA model…</string>
+    <string name="update_stage_relaunching_with_git">[3/4] git pull: %1$s\nRelaunching server &amp; loading CUDA model…</string>
+    <string name="update_stage_complete">[4/4] Updated &amp; online (%1$s → %2$s): %3$s</string>
+    <string name="update_stage_failed">Update failed: %1$s</string>
     <string name="row_mic_permission">Microphone access</string>
     <string name="row_default_assistant">Default digital assistant</string>
     <string name="row_launch_overlay">Launch voice overlay</string>

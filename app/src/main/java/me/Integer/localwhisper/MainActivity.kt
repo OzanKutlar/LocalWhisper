@@ -20,6 +20,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.Integer.localwhisper.databinding.ActivityMainBinding
 import me.Integer.localwhisper.databinding.DialogLanguageBinding
@@ -31,6 +32,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: ServerPreferences
     private val api = LocalWhisperApi()
     private var isTestingConnection = false
+    private var isUpdatingServer = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,6 +79,7 @@ class MainActivity : AppCompatActivity() {
         binding.serverAddressRow.setOnClickListener { showServerAddressDialog() }
         binding.languageRow.setOnClickListener { showLanguageDialog() }
         binding.testConnectionRow.setOnClickListener { testConnection() }
+        binding.updateServerRow.setOnClickListener { confirmAndUpdateServer() }
         binding.micPermissionRow.setOnClickListener { handleMicPermissionRequest() }
         binding.defaultAssistantRow.setOnClickListener { openAssistantSettings() }
         binding.launchOverlayRow.setOnClickListener { launchVoiceOverlay() }
@@ -195,6 +198,122 @@ class MainActivity : AppCompatActivity() {
 
     private fun showTestResult(text: String, @ColorRes colorRes: Int) {
         setColoredText(binding.testConnectionSubtitle, text, colorRes)
+    }
+
+    private fun showUpdateStatus(text: String, @ColorRes colorRes: Int) {
+        setColoredText(binding.updateServerSubtitle, text, colorRes)
+    }
+
+    private fun confirmAndUpdateServer() {
+        if (isUpdatingServer) return
+        val baseUrl = prefs.buildBaseUrl()
+        if (baseUrl == null) {
+            showUpdateStatus(getString(R.string.invalid_server_config), R.color.lw_error)
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.update_confirm_title)
+            .setMessage(R.string.update_confirm_message)
+            .setNegativeButton(R.string.dialog_cancel, null)
+            .setPositiveButton(R.string.update_confirm_button) { _, _ ->
+                runServerUpdateFlow(baseUrl)
+            }
+            .show()
+    }
+
+    private fun runServerUpdateFlow(baseUrl: String) {
+        if (isUpdatingServer) return
+        isUpdatingServer = true
+        showUpdateStatus(getString(R.string.update_stage_closing), R.color.lw_accent)
+        showConnectionStatus(getString(R.string.update_stage_closing), R.color.lw_accent)
+
+        lifecycleScope.launch {
+            val triggerResult = api.triggerServerUpdate(baseUrl)
+            if (triggerResult.isFailure) {
+                val reason = triggerResult.exceptionOrNull()?.message ?: baseUrl
+                showUpdateStatus(getString(R.string.update_stage_failed, reason), R.color.lw_error)
+                showConnectionStatus(getString(R.string.main_status_offline), R.color.lw_error)
+                isUpdatingServer = false
+                return@launch
+            }
+
+            val trigger = triggerResult.getOrThrow()
+            val expectedUpdateId = trigger.updateId
+            var sawServerClosedOrUpdating = false
+            var latestGitSummary = ""
+
+            for (attempt in 0 until UPDATE_MAX_POLL_ATTEMPTS) {
+                delay(UPDATE_POLL_INTERVAL_MS)
+                val statusResult = api.fetchUpdateStatus(baseUrl)
+                statusResult.onSuccess { status ->
+                    if (status.gitSummary.isNotBlank()) {
+                        latestGitSummary = status.gitSummary
+                    }
+                    when (status.phase) {
+                        "closing" -> {
+                            showUpdateStatus(getString(R.string.update_stage_closing), R.color.lw_accent)
+                            showConnectionStatus(getString(R.string.update_stage_closing), R.color.lw_accent)
+                        }
+                        "git_pull" -> {
+                            sawServerClosedOrUpdating = true
+                            showUpdateStatus(getString(R.string.update_stage_git_pull), R.color.lw_accent)
+                            showConnectionStatus(getString(R.string.update_stage_git_pull), R.color.lw_accent)
+                        }
+                        "relaunching" -> {
+                            sawServerClosedOrUpdating = true
+                            val msg = if (latestGitSummary.isNotBlank()) {
+                                getString(R.string.update_stage_relaunching_with_git, latestGitSummary)
+                            } else {
+                                getString(R.string.update_stage_relaunching)
+                            }
+                            showUpdateStatus(msg, R.color.lw_accent)
+                            showConnectionStatus(getString(R.string.update_stage_relaunching), R.color.lw_accent)
+                        }
+                        "online" -> {
+                            val isUpdatedInstance = expectedUpdateId.isEmpty() ||
+                                status.updateId == expectedUpdateId ||
+                                sawServerClosedOrUpdating
+                            if (isUpdatedInstance && attempt >= 2) {
+                                val oldHash = status.oldCommit.ifBlank { trigger.oldCommit.ifBlank { "HEAD" } }
+                                val newHash = status.newCommit.ifBlank { oldHash }
+                                val summary = status.gitSummary.ifBlank { "Up to date" }
+                                val finalColor = if (status.ok) R.color.lw_success else R.color.lw_error
+                                showUpdateStatus(
+                                    getString(R.string.update_stage_complete, oldHash, newHash, summary),
+                                    finalColor
+                                )
+                                showConnectionStatus(getString(R.string.main_status_connected), R.color.lw_success)
+                                isUpdatingServer = false
+                                testConnection()
+                                return@launch
+                            }
+                        }
+                    }
+                }.onFailure {
+                    // Connection refused means old server has closed and either git pull or CUDA model load is running
+                    if (!sawServerClosedOrUpdating) {
+                        sawServerClosedOrUpdating = true
+                        showUpdateStatus(getString(R.string.update_stage_git_pull), R.color.lw_accent)
+                        showConnectionStatus(getString(R.string.update_stage_git_pull), R.color.lw_accent)
+                    } else {
+                        val msg = if (latestGitSummary.isNotBlank()) {
+                            getString(R.string.update_stage_relaunching_with_git, latestGitSummary)
+                        } else {
+                            getString(R.string.update_stage_relaunching)
+                        }
+                        showUpdateStatus(msg, R.color.lw_accent)
+                        showConnectionStatus(getString(R.string.update_stage_relaunching), R.color.lw_accent)
+                    }
+                }
+            }
+
+            showUpdateStatus(
+                getString(R.string.update_stage_failed, "Timed out waiting for server to relaunch"),
+                R.color.lw_error
+            )
+            showConnectionStatus(getString(R.string.main_status_offline), R.color.lw_error)
+            isUpdatingServer = false
+        }
     }
 
     private fun setColoredText(view: TextView, text: String, @ColorRes colorRes: Int) {
@@ -407,5 +526,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "LW-Main"
         private const val RECORD_AUDIO_REQUEST_CODE = 1001
+        private const val UPDATE_POLL_INTERVAL_MS = 750L
+        private const val UPDATE_MAX_POLL_ATTEMPTS = 120 // ~90s budget for git pull + CUDA model reload
     }
 }

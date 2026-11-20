@@ -7,7 +7,12 @@ import asyncio
 import json
 import logging
 import os
+import signal
+import subprocess
 import sys
+import threading
+import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,6 +28,14 @@ if str(SERVER_DIR) not in sys.path:
 from agent_engine import AgentEngine  # noqa: E402
 from asr_engine import AsrEngine  # noqa: E402
 from client_hub import ClientDispatchError, ClientHub, NoClientConnectedError  # noqa: E402
+from updater import (  # noqa: E402
+    CREATE_NEW_PROCESS_GROUP,
+    CREATE_NO_WINDOW,
+    REPO_ROOT,
+    get_git_commit,
+    read_update_state,
+    write_update_state,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +78,9 @@ def create_app(
     llm_base_url: str = DEFAULT_LLM_BASE_URL,
     llm_model: str = DEFAULT_LLM_MODEL,
     llm_api_key: str = DEFAULT_LLM_API_KEY,
+    bind_host: str = DEFAULT_HOST,
+    bind_port: int = DEFAULT_PORT,
+    relaunch_args: list[str] | None = None,
 ) -> FastAPI:
     asr_engine = AsrEngine(model_id=model_id, device=device)
     client_hub = ClientHub()
@@ -75,6 +91,8 @@ def create_app(
         llm_api_key=llm_api_key,
         enable_thinking=True,
     )
+    shutting_down_for_update = False
+    active_update_id = ""
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -98,6 +116,102 @@ def create_app(
     @app.get("/api/clients")
     async def list_clients() -> dict[str, object]:
         return {"clients": await client_hub.list_clients()}
+
+    @app.get("/api/update/status")
+    async def get_update_status() -> dict[str, object]:
+        current_commit = await asyncio.to_thread(get_git_commit, REPO_ROOT)
+        saved = await asyncio.to_thread(read_update_state)
+        if shutting_down_for_update:
+            return {
+                "update_id": active_update_id or saved.get("update_id", ""),
+                "phase": "closing",
+                "ok": True,
+                "message": "Closing server to run git pull...",
+                "old_commit": saved.get("old_commit", current_commit),
+                "new_commit": current_commit,
+                "git_output": "",
+                "git_summary": "",
+            }
+        return {
+            "update_id": saved.get("update_id", ""),
+            "phase": "online",
+            "ok": bool(saved.get("ok", True)),
+            "message": saved.get("message", f"Server online ({current_commit})"),
+            "old_commit": saved.get("old_commit", current_commit),
+            "new_commit": current_commit,
+            "git_output": saved.get("git_output", ""),
+            "git_summary": saved.get("git_summary", ""),
+        }
+
+    @app.post("/api/update")
+    async def trigger_server_update() -> dict[str, object]:
+        nonlocal shutting_down_for_update, active_update_id
+        if shutting_down_for_update:
+            return {
+                "status": "closing",
+                "update_id": active_update_id,
+                "message": "Server update is already in progress...",
+            }
+
+        shutting_down_for_update = True
+        active_update_id = uuid.uuid4().hex[:10]
+        old_commit = await asyncio.to_thread(get_git_commit, REPO_ROOT)
+        initial_state = {
+            "update_id": active_update_id,
+            "phase": "closing",
+            "ok": True,
+            "message": "Closing server to run git pull...",
+            "old_commit": old_commit,
+            "new_commit": old_commit,
+            "git_output": "",
+            "git_summary": "",
+            "updated_at": time.time(),
+        }
+        await asyncio.to_thread(write_update_state, initial_state)
+
+        updater_script = SERVER_DIR / "updater.py"
+        args_for_relaunch = relaunch_args if relaunch_args is not None else sys.argv[1:]
+        cmd = [
+            sys.executable,
+            str(updater_script),
+            "--parent-pid",
+            str(os.getpid()),
+            "--host",
+            bind_host,
+            "--port",
+            str(bind_port),
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--update-id",
+            active_update_id,
+            "--relaunch-args-json",
+            json.dumps(args_for_relaunch),
+        ]
+        if os.name == "nt":
+            subprocess.Popen(
+                cmd,
+                cwd=str(REPO_ROOT),
+                creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+            )
+        else:
+            subprocess.Popen(cmd, cwd=str(REPO_ROOT), start_new_session=True)
+
+        def _terminate_self() -> None:
+            time.sleep(0.3)
+            LOGGER.info("Closing server for git pull update [update_id=%s]...", active_update_id)
+            threading.Timer(1.2, lambda: os._exit(0)).start()
+            try:
+                os.kill(os.getpid(), signal.SIGINT)
+            except Exception:
+                os._exit(0)
+
+        threading.Thread(target=_terminate_self, daemon=True).start()
+        return {
+            "status": "closing",
+            "update_id": active_update_id,
+            "old_commit": old_commit,
+            "message": "Closing server to run git pull and relaunch...",
+        }
 
     @app.post("/api/transcribe")
     async def transcribe(
@@ -291,6 +405,9 @@ def main() -> None:
         llm_base_url=args.llm_base_url,
         llm_model=args.llm_model,
         llm_api_key=args.llm_api_key,
+        bind_host=args.host,
+        bind_port=args.port,
+        relaunch_args=sys.argv[1:],
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

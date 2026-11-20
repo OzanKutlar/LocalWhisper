@@ -80,6 +80,24 @@ data class AgentStreamProgress(
     val toolCalls: List<AgentToolCallInfo>
 )
 
+data class UpdateTriggerResponse(
+    val status: String,
+    val updateId: String,
+    val oldCommit: String,
+    val message: String
+)
+
+data class UpdateStatusResponse(
+    val updateId: String,
+    val phase: String,
+    val ok: Boolean,
+    val message: String,
+    val oldCommit: String,
+    val newCommit: String,
+    val gitOutput: String,
+    val gitSummary: String
+)
+
 class LocalWhisperApi {
 
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
@@ -101,6 +119,40 @@ class LocalWhisperApi {
                 device = json.optString("device", "unknown"),
                 gpuName = json.optString("gpu_name", "unknown"),
                 clients = parseClients(json.optJSONArray("connected_clients"))
+            )
+        }
+    }
+
+    suspend fun triggerServerUpdate(baseUrl: String): Result<UpdateTriggerResponse> = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl/api/update")
+            .post("{}".toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        executeJsonRequest(request) { json ->
+            UpdateTriggerResponse(
+                status = json.optString("status", "closing"),
+                updateId = json.optString("update_id", ""),
+                oldCommit = json.optString("old_commit", ""),
+                message = json.optString("message", "Closing server...")
+            )
+        }
+    }
+
+    suspend fun fetchUpdateStatus(baseUrl: String): Result<UpdateStatusResponse> = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl/api/update/status")
+            .get()
+            .build()
+        executeJsonRequest(request) { json ->
+            UpdateStatusResponse(
+                updateId = json.optString("update_id", ""),
+                phase = json.optString("phase", "online"),
+                ok = json.optBoolean("ok", true),
+                message = json.optString("message", ""),
+                oldCommit = json.optString("old_commit", ""),
+                newCommit = json.optString("new_commit", ""),
+                gitOutput = json.optString("git_output", ""),
+                gitSummary = json.optString("git_summary", "")
             )
         }
     }

@@ -95,6 +95,22 @@
                         style="@style/Widget.LocalWhisper.RowSummary"
                         android:text="@string/row_test_connection_hint" />
                 </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
+                    android:id="@+id/updateServerRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_update_server" />
+
+                    <TextView
+                        android:id="@+id/updateServerSubtitle"
+                        style="@style/Widget.LocalWhisper.RowSummary"
+                        android:text="@string/row_update_server_hint" />
+                </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
