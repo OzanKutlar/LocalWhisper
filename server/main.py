@@ -33,8 +33,8 @@ DEFAULT_HOST = os.environ.get("LOCALWHISPER_HOST", "0.0.0.0")
 DEFAULT_PORT = int(os.environ.get("LOCALWHISPER_PORT", "8765"))
 DEFAULT_MODEL = os.environ.get("LOCALWHISPER_MODEL", "Qwen/Qwen3-ASR-1.7B")
 DEFAULT_DEVICE = os.environ.get("LOCALWHISPER_DEVICE", "cuda:0")
-DEFAULT_LLM_BASE_URL = os.environ.get("LOCALWHISPER_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
-DEFAULT_LLM_MODEL = os.environ.get("LOCALWHISPER_LLM_MODEL", "qwen3:8b")
+DEFAULT_LLM_BASE_URL = os.environ.get("LOCALWHISPER_LLM_BASE_URL", "http://127.0.0.1:34501/v1")
+DEFAULT_LLM_MODEL = os.environ.get("LOCALWHISPER_LLM_MODEL", "llama-server")
 DEFAULT_LLM_API_KEY = os.environ.get("LOCALWHISPER_LLM_API_KEY", "local")
 
 
@@ -228,7 +228,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--llm-base-url",
         default=DEFAULT_LLM_BASE_URL,
-        help="OpenAI-compatible LLM base URL for Agent mode (default: http://127.0.0.1:11434/v1)",
+        help="OpenAI-compatible LLM base URL for Agent mode (default: http://127.0.0.1:34501/v1)",
     )
     parser.add_argument(
         "--llm-model",
