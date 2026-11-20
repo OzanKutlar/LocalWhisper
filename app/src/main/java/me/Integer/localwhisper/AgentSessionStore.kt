@@ -35,6 +35,38 @@ class AgentSessionStore(context: Context) {
             prefs.edit().putString(KEY_ACTIVE_SESSION_ID, value?.trim().orEmpty()).apply()
         }
 
+    fun recordOverlayClosed() {
+        prefs.edit().putLong(KEY_LAST_CLOSED_AT_MS, System.currentTimeMillis()).apply()
+    }
+
+    /**
+     * Returns the previous active session ID if the overlay was reopened within
+     * [resumeTimeoutSeconds] of closing; otherwise selects a new chat session (null).
+     */
+    fun resolveInitialSessionId(resumeTimeoutSeconds: Int): String? {
+        val currentId = activeSessionId ?: return null
+        if (getSession(currentId) == null) {
+            activeSessionId = null
+            return null
+        }
+        if (resumeTimeoutSeconds <= 0) {
+            activeSessionId = null
+            return null
+        }
+        val lastClosedAt = prefs.getLong(KEY_LAST_CLOSED_AT_MS, 0L)
+        if (lastClosedAt <= 0L) {
+            activeSessionId = null
+            return null
+        }
+        val elapsedMs = System.currentTimeMillis() - lastClosedAt
+        return if (elapsedMs in 0L..(resumeTimeoutSeconds * 1000L)) {
+            currentId
+        } else {
+            activeSessionId = null
+            null
+        }
+    }
+
     fun listSessions(): List<SavedAgentSession> {
         val raw = prefs.getString(KEY_SESSIONS_JSON, null) ?: return emptyList()
         return try {
@@ -119,6 +151,7 @@ class AgentSessionStore(context: Context) {
         prefs.edit()
             .remove(KEY_SESSIONS_JSON)
             .remove(KEY_ACTIVE_SESSION_ID)
+            .remove(KEY_LAST_CLOSED_AT_MS)
             .apply()
     }
 
@@ -215,6 +248,7 @@ class AgentSessionStore(context: Context) {
         private const val PREFS_NAME = "localwhisper_agent_sessions"
         private const val KEY_SESSIONS_JSON = "sessions_json"
         private const val KEY_ACTIVE_SESSION_ID = "active_session_id"
+        private const val KEY_LAST_CLOSED_AT_MS = "last_overlay_closed_at_ms"
         private const val MAX_SAVED_SESSIONS = 20
         private const val MAX_TURNS_PER_SESSION = 30
         private const val MAX_TITLE_CHARS = 34

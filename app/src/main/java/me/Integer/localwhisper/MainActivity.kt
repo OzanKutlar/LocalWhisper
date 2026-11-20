@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity() {
         updateDefaultAssistantRow()
         updateKeyboardModeRow()
         updateAgentModeRow()
+        updateAgentResumeTimeoutRow()
         updateTypeOnPhoneRow()
     }
 
@@ -81,6 +82,7 @@ class MainActivity : AppCompatActivity() {
         binding.launchOverlayRow.setOnClickListener { launchVoiceOverlay() }
         binding.keyboardModeRow.setOnClickListener { toggleStartInKeyboardMode() }
         binding.agentModeRow.setOnClickListener { toggleStartInAgentMode() }
+        binding.agentResumeTimeoutRow.setOnClickListener { showAgentResumeTimeoutDialog() }
         binding.typeOnPhoneRow.setOnClickListener { openAccessibilitySettings() }
     }
 
@@ -284,6 +286,39 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateAgentModeRow() {
         binding.agentModeSwitch.isChecked = prefs.startInAgentMode
+    }
+
+    private fun updateAgentResumeTimeoutRow() {
+        val seconds = prefs.agentResumeTimeoutSeconds
+        binding.agentResumeTimeoutValue.text = if (seconds <= 0) {
+            getString(R.string.agent_resume_timeout_instant)
+        } else {
+            getString(R.string.agent_resume_timeout_seconds_format, seconds)
+        }
+    }
+
+    private fun showAgentResumeTimeoutDialog() {
+        val options = ServerPreferences.RESUME_TIMEOUT_OPTIONS_SECONDS
+        val labels = options.map { seconds ->
+            if (seconds == 0) {
+                getString(R.string.agent_resume_timeout_option_instant)
+            } else {
+                getString(R.string.agent_resume_timeout_option_seconds, seconds)
+            }
+        }.toTypedArray()
+        val currentSeconds = prefs.agentResumeTimeoutSeconds
+        val checkedIndex = options.indexOfFirst { it == currentSeconds }.coerceAtLeast(0)
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.row_agent_resume_timeout)
+            .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
+                val selected = options.getOrElse(which) { ServerPreferences.DEFAULT_AGENT_RESUME_TIMEOUT_S }
+                prefs.agentResumeTimeoutSeconds = selected
+                updateAgentResumeTimeoutRow()
+                dialog.dismiss()
+            }
+            .setNegativeButton(R.string.dialog_cancel, null)
+            .show()
     }
 
     // ------------------------------------------------------------ Phone typing

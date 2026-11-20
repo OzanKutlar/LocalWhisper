@@ -35,6 +35,14 @@ class ServerPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_AGENT_MODE, false)
         set(value) = prefs.edit().putBoolean(KEY_AGENT_MODE, value).apply()
 
+    var agentResumeTimeoutSeconds: Int
+        get() = sanitizeResumeTimeout(prefs.getInt(KEY_AGENT_RESUME_TIMEOUT_S, DEFAULT_AGENT_RESUME_TIMEOUT_S))
+        set(value) {
+            prefs.edit()
+                .putInt(KEY_AGENT_RESUME_TIMEOUT_S, sanitizeResumeTimeout(value))
+                .apply()
+        }
+
     fun buildBaseUrl(): String? {
         val host = sanitizeHost(serverHost)
         val port = serverPort
@@ -52,8 +60,18 @@ class ServerPreferences(context: Context) {
         private const val KEY_CLIENT_ID = "selected_client_id"
         private const val KEY_KEYBOARD_MODE = "start_in_keyboard_mode"
         private const val KEY_AGENT_MODE = "start_in_agent_mode"
+        private const val KEY_AGENT_RESUME_TIMEOUT_S = "agent_resume_timeout_s"
         const val DEFAULT_HOST = "192.168.1.100"
         const val DEFAULT_PORT = 8765
+        const val DEFAULT_AGENT_RESUME_TIMEOUT_S = 5
+        val RESUME_TIMEOUT_OPTIONS_SECONDS = intArrayOf(
+            0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60
+        )
+
+        fun sanitizeResumeTimeout(rawSeconds: Int): Int {
+            val clamped = rawSeconds.coerceIn(0, 60)
+            return ((clamped + 2) / 5) * 5
+        }
 
         fun sanitizeHost(raw: String): String {
             return raw.trim()

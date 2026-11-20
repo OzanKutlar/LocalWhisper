@@ -74,8 +74,14 @@ SYSTEM_PROMPT = (
     "{^+z} (Ctrl+Shift+Z), {^f} (Ctrl+F), {^+t}, {#d}. Everything outside braces is "
     "typed literally.\n"
     "2. For pausing music, skipping tracks, or changing PC volume, use `control_pc_media`.\n"
-    "3. For switching windows, launching PC apps, closing windows, or locking the PC, "
-    "use `manage_pc_app`. For opening websites on the PC, use `open_pc_url`.\n"
+    "3. IMPORTANT — When the user asks to 'open', 'bring up', 'go to', or 'switch to' a window "
+    "or application on the PC (e.g. 'open Chrome', 'open VS Code', 'open Discord'), 'open a window' "
+    "almost always means focusing the already-open window rather than spawning a duplicate instance. "
+    "Therefore, you MUST call `list_pc_windows` (the `ps`-like active window search tool) FIRST "
+    "to check if a matching window is already open. If a match is found in `list_pc_windows`, "
+    "call `manage_pc_app` with `action='focus_window'` using the matched window title or process "
+    "name. Only call `manage_pc_app` with `action='launch_app'` if no matching window is open. "
+    "For opening websites/URLs on the PC, use `open_pc_url`.\n"
     "4. For setting alarms, timers, searching the web on the phone, or opening phone apps, "
     "use `trigger_android_intent`.\n"
     "5. To search or list open windows and processes on the PC as a JSON object (like `ps`), "
@@ -142,7 +148,10 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "name": "manage_pc_app",
             "description": (
                 "Launch an application, focus/switch to an existing window, close a window, "
-                "or lock the workstation on the target Windows PC."
+                "or lock the workstation on the target Windows PC. NOTE: Because 'open a window' "
+                "usually means focusing an already-open window, call `list_pc_windows` (ps) first "
+                "to search active windows, then use `action='focus_window'` if it is already open, "
+                "or `action='launch_app'` only if it is not open."
             ),
             "parameters": {
                 "type": "object",

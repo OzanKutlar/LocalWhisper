@@ -114,7 +114,7 @@ class AssistantActivity : AppCompatActivity() {
         setContentView(binding.root)
         prefs = ServerPreferences(this)
         sessionStore = AgentSessionStore(this)
-        agentSessionId = sessionStore.activeSessionId
+        agentSessionId = sessionStore.resolveInitialSessionId(prefs.agentResumeTimeoutSeconds)
         if (prefs.selectedClientId == LOCAL_TARGET_ID) {
             selectedClient = localTarget
         }
@@ -127,6 +127,11 @@ class AssistantActivity : AppCompatActivity() {
         isKeyboardMode = prefs.startInKeyboardMode
         isAgentMode = prefs.startInAgentMode
         beginAssistantFlow()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        sessionStore.recordOverlayClosed()
     }
 
     override fun onDestroy() {
@@ -270,9 +275,6 @@ class AssistantActivity : AppCompatActivity() {
 
     private fun toggleAgentMode() {
         isAgentMode = !isAgentMode
-        if (isAgentMode && agentSessionId == null) {
-            agentSessionId = sessionStore.activeSessionId
-        }
         renderAgentModeButton(currentState)
         renderSessionBar(currentState)
         renderSubtitle()
@@ -1370,6 +1372,7 @@ class AssistantActivity : AppCompatActivity() {
     private fun dismissOverlay() {
         if (isDismissing) return
         isDismissing = true
+        sessionStore.recordOverlayClosed()
         stopTimer()
         binding.waveformView.setActive(false)
         activeJob?.cancel()

@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_engine import (  # noqa: E402
     AGENT_TOOLS,
+    SYSTEM_PROMPT,
     AgentEngine,
     ThinkTagStreamParser,
     check_confirmation_required,
@@ -94,6 +95,16 @@ class ThinkingExtractionTests(unittest.TestCase):
             if t["function"]["name"] == "execute_pc_ahk_sequence"
         )
         self.assertIn("{^Enter}", ahk_tool["description"])
+
+    def test_system_prompt_instructs_ps_before_focus_or_launch(self) -> None:
+        self.assertIn("list_pc_windows", SYSTEM_PROMPT)
+        self.assertIn("focus_window", SYSTEM_PROMPT)
+        manage_tool = next(
+            t["function"]
+            for t in AGENT_TOOLS
+            if t["function"]["name"] == "manage_pc_app"
+        )
+        self.assertIn("list_pc_windows", manage_tool["description"])
 
 
 class ConfirmationGatePolicyTests(unittest.TestCase):

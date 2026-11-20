@@ -239,6 +239,21 @@
                 <View style="@style/Widget.LocalWhisper.Divider" />
 
                 <LinearLayout
+                    android:id="@+id/agentResumeTimeoutRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_agent_resume_timeout" />
+
+                    <TextView
+                        android:id="@+id/agentResumeTimeoutValue"
+                        style="@style/Widget.LocalWhisper.RowValue" />
+                </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
                     android:id="@+id/typeOnPhoneRow"
                     style="@style/Widget.LocalWhisper.Row">
 

@@ -25,6 +25,11 @@
     <string name="row_keyboard_mode_hint">Open the assistant ready to type instead of listening</string>
     <string name="row_agent_mode">Start in Agent mode</string>
     <string name="row_agent_mode_hint">Use thinking LLM with PC &amp; Android tools by default</string>
+    <string name="row_agent_resume_timeout">Continue previous Agent chat</string>
+    <string name="agent_resume_timeout_instant">Instant (always start a new chat)</string>
+    <string name="agent_resume_timeout_seconds_format">Within %1$d seconds of closing</string>
+    <string name="agent_resume_timeout_option_instant">Instant (always new chat)</string>
+    <string name="agent_resume_timeout_option_seconds">%1$d seconds</string>
     <string name="row_type_on_phone">Type on this phone</string>
     <string name="type_on_phone_active">Enabled. Pick This phone as the target</string>
     <string name="type_on_phone_inactive">Tap to enable LocalWhisper typing in Accessibility</string>
