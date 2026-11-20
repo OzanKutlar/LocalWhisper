@@ -409,12 +409,13 @@ class AgentEngine:
         prompt: str,
         client_id: str | None = None,
         session_id: str | None = None,
+        history: list[dict[str, str]] | None = None,
     ) -> AgentTurnResult:
         clean_prompt = prompt.strip()
         if not clean_prompt:
             raise ValueError("Agent prompt must not be empty")
 
-        session = await self._get_or_create_session(session_id)
+        session = await self._get_or_create_session(session_id, history)
         session.thinking_chunks.clear()
         session.tool_records.clear()
         session.android_actions.clear()
@@ -678,7 +679,11 @@ class AgentEngine:
             pending_confirmation=pending_dict,
         )
 
-    async def _get_or_create_session(self, session_id: str | None) -> AgentSession:
+    async def _get_or_create_session(
+        self,
+        session_id: str | None,
+        history: list[dict[str, str]] | None = None,
+    ) -> AgentSession:
         async with self._lock:
             if session_id and session_id in self._sessions:
                 session = self._sessions[session_id]
@@ -690,9 +695,19 @@ class AgentEngine:
                 self._sessions.pop(oldest_id, None)
 
             new_id = session_id.strip() if session_id and session_id.strip() else uuid.uuid4().hex[:12]
+            initial_messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+            if isinstance(history, list):
+                for item in history[-(MAX_SESSION_MESSAGES - 2) :]:
+                    if not isinstance(item, dict):
+                        continue
+                    role = str(item.get("role", "")).strip()
+                    content = str(item.get("content", "")).strip()
+                    if role in ("user", "assistant") and content:
+                        initial_messages.append({"role": role, "content": content})
+
             session = AgentSession(
                 session_id=new_id,
-                messages=[{"role": "system", "content": SYSTEM_PROMPT}],
+                messages=initial_messages,
             )
             self._sessions[new_id] = session
             return session

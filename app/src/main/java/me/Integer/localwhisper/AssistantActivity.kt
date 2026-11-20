@@ -15,6 +15,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
+import android.widget.HorizontalScrollView
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.appcompat.app.AppCompatActivity
@@ -25,6 +28,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -60,6 +64,7 @@ class AssistantActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityAssistantBinding
     private lateinit var prefs: ServerPreferences
+    private lateinit var sessionStore: AgentSessionStore
     private val api = LocalWhisperApi()
     private var recorder: WavAudioRecorder? = null
     private var activeJob: Job? = null
@@ -76,8 +81,8 @@ class AssistantActivity : AppCompatActivity() {
     private var isDismissing = false
     private var isKeyboardMode = false
     private var isAgentMode = false
-    private var isThinkingExpanded = false
     private var agentSessionId: String? = null
+    private var lastSubmittedPrompt: String = ""
     private var activeConfirmation: PendingConfirmationInfo? = null
 
     private val timerHandler = Handler(Looper.getMainLooper())
@@ -94,6 +99,8 @@ class AssistantActivity : AppCompatActivity() {
         binding = ActivityAssistantBinding.inflate(layoutInflater)
         setContentView(binding.root)
         prefs = ServerPreferences(this)
+        sessionStore = AgentSessionStore(this)
+        agentSessionId = sessionStore.activeSessionId
         if (prefs.selectedClientId == LOCAL_TARGET_ID) {
             selectedClient = localTarget
         }
@@ -147,9 +154,17 @@ class AssistantActivity : AppCompatActivity() {
             performTapHaptic(it)
             toggleAgentMode()
         }
-        binding.thinkingDrawerCard.setOnClickListener {
+        binding.sessionSelectorText.setOnClickListener {
             performTapHaptic(it)
-            toggleThinkingDrawer()
+            showSessionPickerDialog()
+        }
+        binding.viewChatHistoryButton.setOnClickListener {
+            performTapHaptic(it)
+            openActiveSessionChatView()
+        }
+        binding.newSessionButton.setOnClickListener {
+            performTapHaptic(it)
+            startFreshAgentSession()
         }
         binding.approveConfirmButton.setOnClickListener {
             performTapHaptic(it)
@@ -241,7 +256,11 @@ class AssistantActivity : AppCompatActivity() {
 
     private fun toggleAgentMode() {
         isAgentMode = !isAgentMode
+        if (isAgentMode && agentSessionId == null) {
+            agentSessionId = sessionStore.activeSessionId
+        }
         renderAgentModeButton(currentState)
+        renderSessionBar(currentState)
         renderSubtitle()
         renderBottomSections(currentState)
         updateTranscriptHint()
@@ -250,22 +269,89 @@ class AssistantActivity : AppCompatActivity() {
         }
     }
 
-    private fun toggleThinkingDrawer() {
-        isThinkingExpanded = !isThinkingExpanded
-        binding.thinkingBodyText.visibility = visibleIf(isThinkingExpanded)
-        binding.thinkingHeaderText.setText(
-            if (isThinkingExpanded) {
-                R.string.assistant_thinking_header_expanded
-            } else {
-                R.string.assistant_thinking_header_collapsed
-            }
-        )
-    }
-
     private fun updateTranscriptHint() {
         binding.transcriptInput.setHint(
             if (isAgentMode) R.string.assistant_agent_prompt_hint else R.string.assistant_transcript_hint
         )
+    }
+
+    private fun showSessionPickerDialog() {
+        val sessions = sessionStore.listSessions()
+        val items = ArrayList<String>(sessions.size + 1)
+        items.add(getString(R.string.assistant_session_picker_new))
+        for (session in sessions) {
+            items.add(
+                getString(
+                    R.string.assistant_session_picker_item_format,
+                    session.title,
+                    session.turns.size
+                )
+            )
+        }
+        val activeIndex = sessions.indexOfFirst { it.sessionId == agentSessionId }
+        val checkedItem = if (activeIndex >= 0) activeIndex + 1 else 0
+
+        val builder = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.assistant_session_picker_title)
+            .setSingleChoiceItems(items.toTypedArray(), checkedItem) { dialog, which ->
+                dialog.dismiss()
+                if (which == 0) {
+                    startFreshAgentSession()
+                } else {
+                    val chosen = sessions.getOrNull(which - 1)
+                    if (chosen != null) {
+                        selectExistingAgentSession(chosen)
+                    }
+                }
+            }
+            .setNegativeButton(R.string.assistant_cancel, null)
+
+        if (sessions.isNotEmpty()) {
+            builder.setNeutralButton(R.string.assistant_session_clear_all) { _, _ ->
+                sessionStore.clearAll()
+                startFreshAgentSession()
+            }
+        }
+        builder.show()
+    }
+
+    private fun startFreshAgentSession() {
+        agentSessionId = sessionStore.startNewSession()
+        activeConfirmation = null
+        binding.chatHistoryContainer.removeAllViews()
+        binding.confirmationGateCard.visibility = View.GONE
+        if (currentState == UiState.AGENT_RESULT) {
+            if (isKeyboardMode) {
+                enterKeyboardMode()
+            } else {
+                enterVoiceMode()
+            }
+        } else {
+            renderSessionBar(currentState)
+        }
+    }
+
+    private fun selectExistingAgentSession(session: SavedAgentSession) {
+        stopTimer()
+        binding.waveformView.setActive(false)
+        activeJob?.cancel()
+        recorder?.cancel()
+        recorder = null
+        hideKeyboard()
+        clearError()
+
+        isAgentMode = true
+        agentSessionId = session.sessionId
+        sessionStore.activeSessionId = session.sessionId
+        activeConfirmation = null
+        binding.confirmationGateCard.visibility = View.GONE
+        renderChatHistoryThread(session)
+        setUiState(UiState.AGENT_RESULT)
+    }
+
+    private fun openActiveSessionChatView() {
+        val session = sessionStore.getSession(agentSessionId) ?: return
+        selectExistingAgentSession(session)
     }
 
     /** Stops any recording and lets the user type the text to send instead of dictating it. */
@@ -408,6 +494,8 @@ class AssistantActivity : AppCompatActivity() {
         }
         clearError()
         hideKeyboard()
+        lastSubmittedPrompt = prompt
+        val existingTurns = sessionStore.getSession(agentSessionId)?.turns.orEmpty()
         setUiState(UiState.AGENT_THINKING)
 
         val targetClientId = if (isLocalTargetSelected()) null else selectedClient?.id
@@ -417,10 +505,11 @@ class AssistantActivity : AppCompatActivity() {
                 baseUrl = baseUrl,
                 prompt = prompt,
                 clientId = targetClientId,
-                sessionId = agentSessionId
+                sessionId = agentSessionId,
+                priorTurns = existingTurns
             )
             result.onSuccess { response ->
-                handleAgentResponse(response)
+                handleAgentResponse(response, isConfirmationResume = false)
             }.onFailure { exc ->
                 showError(exc.message ?: getString(R.string.assistant_send_failed))
                 setUiState(UiState.REVIEW)
@@ -447,7 +536,7 @@ class AssistantActivity : AppCompatActivity() {
                 clientId = targetClientId
             )
             result.onSuccess { response ->
-                handleAgentResponse(response)
+                handleAgentResponse(response, isConfirmationResume = true)
             }.onFailure { exc ->
                 showError(exc.message ?: getString(R.string.assistant_send_failed))
                 setUiState(UiState.AGENT_RESULT)
@@ -455,33 +544,35 @@ class AssistantActivity : AppCompatActivity() {
         }
     }
 
-    private fun handleAgentResponse(response: AgentResponse) {
-        if (response.sessionId.isNotEmpty()) {
-            agentSessionId = response.sessionId
+    private fun handleAgentResponse(response: AgentResponse, isConfirmationResume: Boolean) {
+        val resolvedSessionId = response.sessionId.ifEmpty {
+            agentSessionId ?: sessionStore.startNewSession()
         }
+        agentSessionId = resolvedSessionId
         activeConfirmation = response.pendingConfirmation
 
         // Execute any native Android system intents (Idea #7)
         val androidOutcomes = AndroidActionExecutor.executeAll(this, response.androidActions)
 
-        // Bind collapsible Thinking drawer (Idea #9)
-        val hasThinking = response.thinking.isNotBlank()
-        binding.thinkingDrawerCard.visibility = visibleIf(hasThinking)
-        binding.thinkingBodyText.text = response.thinking
-        isThinkingExpanded = false
-        binding.thinkingBodyText.visibility = View.GONE
-        binding.thinkingHeaderText.setText(R.string.assistant_thinking_header_collapsed)
-
-        // Bind Tool Execution Status Pills (Idea #9)
         val allPills = ArrayList<AgentToolCallInfo>(response.toolCalls.size + androidOutcomes.size)
         allPills.addAll(response.toolCalls)
         for (outcome in androidOutcomes) {
             allPills.add(AgentToolCallInfo(tool = "android", status = "ok", summary = outcome))
         }
-        populateToolPills(allPills)
 
-        // Bind reply text
-        binding.agentReplyText.text = response.reply.ifBlank { getString(R.string.assistant_state_sent) }
+        val turn = AgentChatTurn(
+            userPrompt = lastSubmittedPrompt,
+            thinking = response.thinking,
+            toolCalls = allPills,
+            reply = response.reply.ifBlank { getString(R.string.assistant_state_sent) }
+        )
+        val savedSession = if (isConfirmationResume) {
+            sessionStore.updateLastTurn(resolvedSessionId, turn)
+        } else {
+            sessionStore.recordTurn(resolvedSessionId, turn)
+        }
+
+        renderChatHistoryThread(savedSession)
 
         // Bind Confirmation Gate card if a high-impact PC tool is waiting approval (Idea #10)
         val pending = response.pendingConfirmation
@@ -495,38 +586,183 @@ class AssistantActivity : AppCompatActivity() {
         setUiState(UiState.AGENT_RESULT)
     }
 
-    private fun populateToolPills(pills: List<AgentToolCallInfo>) {
-        binding.toolPillsGroup.removeAllViews()
-        if (pills.isEmpty()) {
-            binding.toolPillsScroll.visibility = View.GONE
-            return
+    private fun renderChatHistoryThread(session: SavedAgentSession) {
+        val container = binding.chatHistoryContainer
+        container.removeAllViews()
+        val turns = session.turns
+        for ((index, turn) in turns.withIndex()) {
+            container.addView(buildTurnView(turn, isFirst = index == 0))
         }
-        binding.toolPillsScroll.visibility = View.VISIBLE
-        val chipBg = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.lw_pill_bg))
-        for (pill in pills) {
-            val prefix = when (pill.status) {
-                "ok", "queued_on_phone" -> "✓ "
-                "pending_confirmation" -> "⏳ "
-                "rejected", "error" -> "✕ "
-                else -> "• "
+        adjustAgentScrollHeightAndScrollToBottom()
+    }
+
+    private fun buildTurnView(turn: AgentChatTurn, isFirst: Boolean): View {
+        val turnWrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                if (!isFirst) topMargin = dpToPx(12)
             }
-            val textColorRes = when (pill.status) {
-                "ok", "queued_on_phone" -> R.color.lw_success
-                "pending_confirmation" -> R.color.lw_accent
-                "rejected", "error" -> R.color.lw_error
-                else -> R.color.lw_text_primary
+        }
+
+        // 1. User message bubble
+        if (turn.userPrompt.isNotBlank()) {
+            val userBox = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundResource(R.drawable.bg_status_pill)
+                setPadding(dpToPx(14), dpToPx(8), dpToPx(14), dpToPx(8))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dpToPx(6)
+                }
             }
-            val chip = Chip(this).apply {
-                text = prefix + pill.summary
+            val userLabel = TextView(this).apply {
+                text = getString(R.string.assistant_you_label)
+                textSize = 11f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(ContextCompat.getColor(context, R.color.lw_accent))
+            }
+            val userText = TextView(this).apply {
+                text = turn.userPrompt
+                textSize = 14f
+                setTextColor(ContextCompat.getColor(context, R.color.lw_text_primary))
+            }
+            userBox.addView(userLabel)
+            userBox.addView(userText)
+            turnWrapper.addView(userBox)
+        }
+
+        // 2. Collapsible Thinking drawer for this turn
+        if (turn.thinking.isNotBlank()) {
+            val thinkingCard = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundResource(R.drawable.bg_info_panel)
+                setPadding(dpToPx(12), dpToPx(9), dpToPx(12), dpToPx(9))
+                isClickable = true
+                isFocusable = true
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dpToPx(6)
+                }
+            }
+            val headerText = TextView(this).apply {
+                text = getString(R.string.assistant_thinking_header_collapsed)
                 textSize = 12f
-                isCheckable = false
-                isClickable = false
-                chipBackgroundColor = chipBg
-                chipStrokeWidth = 0f
-                setTextColor(ContextCompat.getColor(context, textColorRes))
-                setEnsureMinTouchTargetSize(false)
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(ContextCompat.getColor(context, R.color.lw_accent))
             }
-            binding.toolPillsGroup.addView(chip)
+            val bodyText = TextView(this).apply {
+                text = turn.thinking
+                textSize = 12f
+                typeface = Typeface.MONOSPACE
+                setTextColor(ContextCompat.getColor(context, R.color.lw_text_secondary))
+                visibility = View.GONE
+                setPadding(0, dpToPx(6), 0, 0)
+            }
+            thinkingCard.setOnClickListener {
+                performTapHaptic(it)
+                val expanded = bodyText.visibility != View.VISIBLE
+                bodyText.visibility = visibleIf(expanded)
+                headerText.setText(
+                    if (expanded) {
+                        R.string.assistant_thinking_header_expanded
+                    } else {
+                        R.string.assistant_thinking_header_collapsed
+                    }
+                )
+                adjustAgentScrollHeightAndScrollToBottom(scrollToBottom = false)
+            }
+            thinkingCard.addView(headerText)
+            thinkingCard.addView(bodyText)
+            turnWrapper.addView(thinkingCard)
+        }
+
+        // 3. Tool Execution Status Pills for this turn
+        if (turn.toolCalls.isNotEmpty()) {
+            val chipScroll = HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dpToPx(6)
+                }
+            }
+            val chipGroup = ChipGroup(this).apply {
+                isSingleLine = true
+                chipSpacingHorizontal = dpToPx(6)
+            }
+            val chipBg = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.lw_pill_bg))
+            for (pill in turn.toolCalls) {
+                val prefix = when (pill.status) {
+                    "ok", "queued_on_phone" -> "✓ "
+                    "pending_confirmation" -> "⏳ "
+                    "rejected", "error" -> "✕ "
+                    else -> "• "
+                }
+                val textColorRes = when (pill.status) {
+                    "ok", "queued_on_phone" -> R.color.lw_success
+                    "pending_confirmation" -> R.color.lw_accent
+                    "rejected", "error" -> R.color.lw_error
+                    else -> R.color.lw_text_primary
+                }
+                val chip = Chip(this).apply {
+                    text = prefix + pill.summary
+                    textSize = 12f
+                    isCheckable = false
+                    isClickable = false
+                    chipBackgroundColor = chipBg
+                    chipStrokeWidth = 0f
+                    setTextColor(ContextCompat.getColor(context, textColorRes))
+                    setEnsureMinTouchTargetSize(false)
+                }
+                chipGroup.addView(chip)
+            }
+            chipScroll.addView(chipGroup)
+            turnWrapper.addView(chipScroll)
+        }
+
+        // 4. Agent reply bubble
+        val replyBox = TextView(this).apply {
+            text = turn.reply
+            textSize = 15f
+            setTextIsSelectable(true)
+            setLineSpacing(0f, 1.2f)
+            setBackgroundResource(R.drawable.bg_info_panel)
+            setPadding(dpToPx(14), dpToPx(11), dpToPx(14), dpToPx(11))
+            setTextColor(ContextCompat.getColor(context, R.color.lw_text_primary))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        turnWrapper.addView(replyBox)
+        return turnWrapper
+    }
+
+    private fun adjustAgentScrollHeightAndScrollToBottom(scrollToBottom: Boolean = true) {
+        binding.agentResultScroll.post {
+            val maxHeightPx = dpToPx(MAX_AGENT_SCROLL_HEIGHT_DP)
+            val contentHeight = binding.agentResultContent.height
+            val params = binding.agentResultScroll.layoutParams
+            val desiredHeight = if (contentHeight > maxHeightPx) {
+                maxHeightPx
+            } else {
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            }
+            if (params.height != desiredHeight) {
+                params.height = desiredHeight
+                binding.agentResultScroll.layoutParams = params
+            }
+            if (scrollToBottom) {
+                binding.agentResultScroll.fullScroll(View.FOCUS_DOWN)
+            }
         }
     }
 
@@ -674,8 +910,38 @@ class AssistantActivity : AppCompatActivity() {
         configureControls(state)
         renderModeToggle(state)
         renderAgentModeButton(state)
+        renderSessionBar(state)
         updateTranscriptHint()
+        if (state == UiState.AGENT_RESULT) {
+            adjustAgentScrollHeightAndScrollToBottom()
+        }
         binding.transcriptInput.isEnabled = state != UiState.SENDING && state != UiState.AGENT_THINKING
+    }
+
+    private fun renderSessionBar(state: UiState) {
+        val showBar = isAgentMode && state != UiState.SETUP_REQUIRED && state != UiState.SENT
+        binding.agentSessionBar.visibility = visibleIf(showBar)
+        if (!showBar) return
+
+        val activeSession = sessionStore.getSession(agentSessionId)
+        if (activeSession != null && activeSession.turns.isNotEmpty()) {
+            binding.sessionSelectorText.text = getString(
+                R.string.assistant_session_continuing_format,
+                activeSession.title,
+                activeSession.turns.size
+            )
+            binding.newSessionButton.visibility = View.VISIBLE
+            binding.viewChatHistoryButton.text = getString(
+                R.string.assistant_session_view_chat_format,
+                activeSession.turns.size
+            )
+            binding.viewChatHistoryButton.visibility =
+                visibleIf(state == UiState.RECORDING || state == UiState.REVIEW)
+        } else {
+            binding.sessionSelectorText.setText(R.string.assistant_session_new)
+            binding.newSessionButton.visibility = View.GONE
+            binding.viewChatHistoryButton.visibility = View.GONE
+        }
     }
 
     private fun renderAgentModeButton(state: UiState) {
@@ -923,6 +1189,7 @@ class AssistantActivity : AppCompatActivity() {
         private const val DISABLED_ALPHA = 0.4f
         private const val RECORDING_FILE_NAME = "localwhisper_recording.wav"
         private const val LOCAL_TARGET_ID = "local-phone"
+        private const val MAX_AGENT_SCROLL_HEIGHT_DP = 280
         private val AHK_QUICK_TOKENS = listOf(
             "{Enter}",
             "{Tab}",

@@ -96,6 +96,16 @@
     <string name="assistant_confirm_reject">Reject</string>
     <string name="assistant_follow_up_voice_desc">Ask a voice follow-up</string>
     <string name="assistant_follow_up_keyboard_desc">Type a follow-up</string>
+    <string name="assistant_session_new">New session (tap to switch)</string>
+    <string name="assistant_session_continuing_format">Session: %1$s (%2$d)</string>
+    <string name="assistant_session_new_button">+ New</string>
+    <string name="assistant_session_view_chat_format">Chat (%1$d)</string>
+    <string name="assistant_session_picker_title">Agent chat session</string>
+    <string name="assistant_session_picker_new">+ Start a new session</string>
+    <string name="assistant_session_picker_item_format">%1$s (%2$d turns)</string>
+    <string name="assistant_session_clear_all">Clear history</string>
+    <string name="assistant_you_label">You</string>
+    <string name="assistant_agent_label">Agent</string>
 
     <!-- Voice overlay: errors -->
     <string name="assistant_mic_required">Microphone permission is required. Open LocalWhisper to grant it.</string>

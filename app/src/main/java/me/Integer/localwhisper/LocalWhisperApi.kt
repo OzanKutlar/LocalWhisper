@@ -178,7 +178,8 @@ class LocalWhisperApi {
         baseUrl: String,
         prompt: String,
         clientId: String?,
-        sessionId: String?
+        sessionId: String?,
+        priorTurns: List<AgentChatTurn> = emptyList()
     ): Result<AgentResponse> = withContext(Dispatchers.IO) {
         if (prompt.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("Prompt must not be empty"))
@@ -190,6 +191,28 @@ class LocalWhisperApi {
             }
             if (!sessionId.isNullOrBlank()) {
                 put("session_id", sessionId)
+            }
+            if (priorTurns.isNotEmpty()) {
+                val historyArray = JSONArray()
+                for (turn in priorTurns) {
+                    if (turn.userPrompt.isNotBlank()) {
+                        historyArray.put(
+                            JSONObject().apply {
+                                put("role", "user")
+                                put("content", turn.userPrompt)
+                            }
+                        )
+                    }
+                    if (turn.reply.isNotBlank()) {
+                        historyArray.put(
+                            JSONObject().apply {
+                                put("role", "assistant")
+                                put("content", turn.reply)
+                            }
+                        )
+                    }
+                }
+                put("history", historyArray)
             }
         }
         val request = Request.Builder()

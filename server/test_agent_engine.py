@@ -179,6 +179,41 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hub.calls[0][0], "manage_pc_app")
         self.assertEqual(resumed.reply, "Closed Chrome on your PC.")
 
+    async def test_rehydrates_session_from_client_history(self) -> None:
+        hub = FakeClientHub()
+        captured_messages: list[dict[str, Any]] = []
+
+        class InspectingEngine(FakeAgentEngine):
+            async def _request_chat_completion(
+                self, messages: list[dict[str, Any]]
+            ) -> dict[str, Any]:
+                captured_messages.extend(messages)
+                return await super()._request_chat_completion(messages)
+
+        engine = InspectingEngine(
+            hub,
+            [{"role": "assistant", "content": "Continued session reply."}],
+        )
+        prior_history = [
+            {"role": "user", "content": "First question"},
+            {"role": "assistant", "content": "First answer"},
+        ]
+        result = await engine.run_turn(
+            prompt="Follow-up question",
+            session_id="saved_sess_1",
+            history=prior_history,
+        )
+        self.assertEqual(result.session_id, "saved_sess_1")
+        roles_and_texts = [(m["role"], m["content"]) for m in captured_messages if m["role"] != "system"]
+        self.assertEqual(
+            roles_and_texts,
+            [
+                ("user", "First question"),
+                ("assistant", "First answer"),
+                ("user", "Follow-up question"),
+            ],
+        )
+
     def test_summarize_tool_call_formats_labels(self) -> None:
         label = summarize_tool_call(
             "execute_pc_ahk_sequence",

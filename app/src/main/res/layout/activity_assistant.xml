@@ -127,6 +127,72 @@
                 app:iconTint="@color/lw_text_secondary" />
         </LinearLayout>
 
+        <!-- Agent Session Bar: switch between new chat or continuing previous sessions -->
+        <LinearLayout
+            android:id="@+id/agentSessionBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/sessionSelectorText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:background="@drawable/bg_status_pill"
+                android:clickable="true"
+                android:ellipsize="end"
+                android:focusable="true"
+                android:paddingStart="12dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="6dp"
+                android:singleLine="true"
+                android:text="@string/assistant_session_new"
+                android:textColor="@color/lw_text_primary"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/viewChatHistoryButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/bg_status_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:paddingStart="11dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="11dp"
+                android:paddingBottom="6dp"
+                android:singleLine="true"
+                android:textColor="@color/lw_accent"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/newSessionButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/bg_status_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:paddingStart="11dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="11dp"
+                android:paddingBottom="6dp"
+                android:singleLine="true"
+                android:text="@string/assistant_session_new_button"
+                android:textColor="@color/lw_accent"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+        </LinearLayout>
+
         <!-- Stage: waveform, spinner, transcript box, sent check or setup message -->
         <FrameLayout
             android:id="@+id/stageArea"
@@ -182,80 +248,27 @@
                     android:textSize="16sp"
                     android:visibility="gone" />
 
-                <!-- Agent Result Section: Thinking drawer, tool pills, reply, confirmation gate -->
+                <!-- Agent Result Section: Multi-turn chat history thread & confirmation gate -->
                 <ScrollView
                     android:id="@+id/agentResultScroll"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:fadeScrollbars="false"
+                    android:scrollbars="vertical"
                     android:visibility="gone">
 
                     <LinearLayout
+                        android:id="@+id/agentResultContent"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="vertical">
 
-                        <!-- Collapsible Thinking Drawer -->
+                        <!-- Dynamic Multi-Turn Chat History Container -->
                         <LinearLayout
-                            android:id="@+id/thinkingDrawerCard"
+                            android:id="@+id/chatHistoryContainer"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginBottom="8dp"
-                            android:background="@drawable/bg_info_panel"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:orientation="vertical"
-                            android:padding="12dp"
-                            android:visibility="gone">
-
-                            <TextView
-                                android:id="@+id/thinkingHeaderText"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:text="@string/assistant_thinking_header_collapsed"
-                                android:textColor="@color/lw_accent"
-                                android:textSize="13sp"
-                                android:textStyle="bold" />
-
-                            <TextView
-                                android:id="@+id/thinkingBodyText"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="6dp"
-                                android:fontFamily="monospace"
-                                android:lineSpacingMultiplier="1.15"
-                                android:textColor="@color/lw_text_secondary"
-                                android:textSize="12sp"
-                                android:visibility="gone" />
-                        </LinearLayout>
-
-                        <!-- Tool Execution Status Pills -->
-                        <HorizontalScrollView
-                            android:id="@+id/toolPillsScroll"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginBottom="8dp"
-                            android:scrollbars="none"
-                            android:visibility="gone">
-
-                            <com.google.android.material.chip.ChipGroup
-                                android:id="@+id/toolPillsGroup"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                app:chipSpacingHorizontal="6dp"
-                                app:singleLine="true" />
-                        </HorizontalScrollView>
-
-                        <!-- Agent Reply Text -->
-                        <TextView
-                            android:id="@+id/agentReplyText"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:background="@drawable/bg_info_panel"
-                            android:lineSpacingMultiplier="1.2"
-                            android:padding="14dp"
-                            android:textColor="@color/lw_text_primary"
-                            android:textIsSelectable="true"
-                            android:textSize="15sp" />
+                            android:orientation="vertical" />
 
                         <!-- Confirmation Gate Card (Idea #10) -->
                         <LinearLayout

@@ -47,6 +47,7 @@ class AgentRunRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=16000)
     client_id: str | None = Field(default=None)
     session_id: str | None = Field(default=None)
+    history: list[dict[str, str]] | None = Field(default=None)
 
 
 class AgentConfirmRequest(BaseModel):
@@ -143,6 +144,7 @@ def create_app(
                 prompt=request.prompt,
                 client_id=request.client_id,
                 session_id=request.session_id,
+                history=request.history,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
