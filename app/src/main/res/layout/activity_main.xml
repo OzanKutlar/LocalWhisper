@@ -207,6 +207,38 @@
                 <View style="@style/Widget.LocalWhisper.Divider" />
 
                 <LinearLayout
+                    android:id="@+id/agentModeRow"
+                    style="@style/Widget.LocalWhisper.Row"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/Widget.LocalWhisper.RowTitle"
+                            android:text="@string/row_agent_mode" />
+
+                        <TextView
+                            style="@style/Widget.LocalWhisper.RowSummary"
+                            android:text="@string/row_agent_mode_hint" />
+                    </LinearLayout>
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/agentModeSwitch"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="16dp"
+                        android:clickable="false"
+                        android:focusable="false"
+                        android:importantForAccessibility="no" />
+                </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
                     android:id="@+id/typeOnPhoneRow"
                     style="@style/Widget.LocalWhisper.Row">
 

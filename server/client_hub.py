@@ -37,12 +37,19 @@ class PendingRequest:
     future: asyncio.Future[tuple[bool, str | None]]
 
 
+@dataclass
+class PendingToolRequest:
+    client_id: str
+    future: asyncio.Future[tuple[bool, dict[str, object] | None, str | None]]
+
+
 class ClientHub:
-    """Tracks PC client WebSockets and dispatches keystroke commands with ACKs."""
+    """Tracks PC client WebSockets and dispatches keystroke and tool commands with ACKs."""
 
     def __init__(self) -> None:
         self._clients: dict[str, ConnectedClient] = {}
         self._pending: dict[str, PendingRequest] = {}
+        self._pending_tools: dict[str, PendingToolRequest] = {}
         self._lock = asyncio.Lock()
 
     async def register(self, websocket: WebSocket, name: str) -> ConnectedClient:
@@ -71,6 +78,15 @@ class ClientHub:
                 req = self._pending.pop(req_id)
                 if not req.future.done():
                     req.future.set_result((False, "PC client disconnected"))
+            stale_tool_ids = [
+                req_id
+                for req_id, req in self._pending_tools.items()
+                if req.client_id == client_id
+            ]
+            for req_id in stale_tool_ids:
+                tool_req = self._pending_tools.pop(req_id)
+                if not tool_req.future.done():
+                    tool_req.future.set_result((False, None, "PC client disconnected"))
         if client is not None:
             LOGGER.info("PC client disconnected: %s [%s]", client.name, client.client_id)
 
@@ -90,6 +106,73 @@ class ClientHub:
             pending = self._pending.get(request_id)
         if pending is not None and not pending.future.done():
             pending.future.set_result((ok, error))
+
+    async def resolve_tool_result(
+        self,
+        request_id: str,
+        ok: bool,
+        result: dict[str, object] | None = None,
+        error: str | None = None,
+    ) -> None:
+        async with self._lock:
+            pending = self._pending_tools.get(request_id)
+        if pending is not None and not pending.future.done():
+            pending.future.set_result((ok, result, error))
+
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, object],
+        client_id: str | None = None,
+        timeout_s: float = DEFAULT_ACK_TIMEOUT_S,
+    ) -> tuple[str, str, dict[str, object]]:
+        if not tool_name or not tool_name.strip():
+            raise ValueError("tool_name must not be empty")
+
+        target = await self._select_client(client_id)
+        request_id = uuid.uuid4().hex
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[tuple[bool, dict[str, object] | None, str | None]] = (
+            loop.create_future()
+        )
+
+        async with self._lock:
+            self._pending_tools[request_id] = PendingToolRequest(
+                client_id=target.client_id,
+                future=future,
+            )
+
+        payload = json.dumps(
+            {
+                "type": "tool_call",
+                "id": request_id,
+                "tool": tool_name,
+                "arguments": arguments,
+            }
+        )
+        try:
+            await target.websocket.send_text(payload)
+            ok, result, error = await asyncio.wait_for(future, timeout=timeout_s)
+        except asyncio.TimeoutError as exc:
+            raise ClientDispatchError(
+                f"Timed out waiting for PC client '{target.name}' to run tool '{tool_name}'"
+            ) from exc
+        except Exception as exc:
+            if isinstance(exc, ClientDispatchError):
+                raise
+            raise ClientDispatchError(
+                f"Failed to dispatch tool '{tool_name}' to PC client '{target.name}': {exc}"
+            ) from exc
+        finally:
+            async with self._lock:
+                self._pending_tools.pop(request_id, None)
+
+        if not ok:
+            raise ClientDispatchError(
+                error or f"PC client '{target.name}' failed while executing '{tool_name}'"
+            )
+
+        return target.client_id, target.name, (result or {"ok": True})
 
     async def send_keystrokes(
         self,

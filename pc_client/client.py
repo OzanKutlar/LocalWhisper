@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 import websockets
 
 from ahk_payload import build_send_units, plan_typing_delay_ms
+from pc_tools import dispatch_pc_tool
 
 logging.basicConfig(
     level=logging.INFO,
@@ -139,6 +140,29 @@ async def handle_message(
             message.get("name"),
             message.get("client_id"),
         )
+        return
+
+    if msg_type == "tool_call":
+        request_id = str(message.get("id", ""))
+        tool_name = str(message.get("tool", ""))
+        raw_args = message.get("arguments")
+        arguments = raw_args if isinstance(raw_args, dict) else {}
+        LOGGER.info("Executing agent tool '%s'", tool_name)
+        try:
+            result = await asyncio.to_thread(
+                dispatch_pc_tool,
+                tool_name,
+                arguments,
+                ahk_exe,
+                send_mode,
+                human_typing,
+                execute_ahk_send,
+            )
+            reply = {"type": "tool_result", "id": request_id, "ok": True, "result": result}
+        except Exception as exc:
+            LOGGER.error("Agent tool '%s' failed: %s", tool_name, exc)
+            reply = {"type": "tool_result", "id": request_id, "ok": False, "error": str(exc)}
+        await websocket.send(json.dumps(reply))
         return
 
     if msg_type != "send":

@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity() {
         updatePermissionRow()
         updateDefaultAssistantRow()
         updateKeyboardModeRow()
+        updateAgentModeRow()
         updateTypeOnPhoneRow()
     }
 
@@ -79,6 +80,7 @@ class MainActivity : AppCompatActivity() {
         binding.defaultAssistantRow.setOnClickListener { openAssistantSettings() }
         binding.launchOverlayRow.setOnClickListener { launchVoiceOverlay() }
         binding.keyboardModeRow.setOnClickListener { toggleStartInKeyboardMode() }
+        binding.agentModeRow.setOnClickListener { toggleStartInAgentMode() }
         binding.typeOnPhoneRow.setOnClickListener { openAccessibilitySettings() }
     }
 
@@ -209,6 +211,7 @@ class MainActivity : AppCompatActivity() {
             health.gpuName,
             health.device,
             health.model,
+            health.agentModel,
             clientNames
         )
     }
@@ -272,6 +275,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateKeyboardModeRow() {
         binding.keyboardModeSwitch.isChecked = prefs.startInKeyboardMode
+    }
+
+    private fun toggleStartInAgentMode() {
+        prefs.startInAgentMode = !prefs.startInAgentMode
+        updateAgentModeRow()
+    }
+
+    private fun updateAgentModeRow() {
+        binding.agentModeSwitch.isChecked = prefs.startInAgentMode
     }
 
     // ------------------------------------------------------------ Phone typing

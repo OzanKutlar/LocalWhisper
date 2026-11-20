@@ -35,7 +35,16 @@ import java.util.Locale
 
 class AssistantActivity : AppCompatActivity() {
 
-    private enum class UiState { SETUP_REQUIRED, RECORDING, TRANSCRIBING, REVIEW, SENDING, SENT }
+    private enum class UiState {
+        SETUP_REQUIRED,
+        RECORDING,
+        TRANSCRIBING,
+        REVIEW,
+        SENDING,
+        AGENT_THINKING,
+        AGENT_RESULT,
+        SENT
+    }
 
     private data class ControlSpec(
         @DrawableRes val iconRes: Int,
@@ -66,6 +75,10 @@ class AssistantActivity : AppCompatActivity() {
     private var sentClientName = ""
     private var isDismissing = false
     private var isKeyboardMode = false
+    private var isAgentMode = false
+    private var isThinkingExpanded = false
+    private var agentSessionId: String? = null
+    private var activeConfirmation: PendingConfirmationInfo? = null
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
@@ -91,6 +104,7 @@ class AssistantActivity : AppCompatActivity() {
         setupAhkChips()
         animateContentIn()
         isKeyboardMode = prefs.startInKeyboardMode
+        isAgentMode = prefs.startInAgentMode
         beginAssistantFlow()
     }
 
@@ -128,6 +142,22 @@ class AssistantActivity : AppCompatActivity() {
         binding.keyboardModeButton.setOnClickListener {
             performTapHaptic(it)
             toggleInputMode()
+        }
+        binding.agentModeButton.setOnClickListener {
+            performTapHaptic(it)
+            toggleAgentMode()
+        }
+        binding.thinkingDrawerCard.setOnClickListener {
+            performTapHaptic(it)
+            toggleThinkingDrawer()
+        }
+        binding.approveConfirmButton.setOnClickListener {
+            performTapHaptic(it)
+            submitAgentConfirmation(approved = true)
+        }
+        binding.rejectConfirmButton.setOnClickListener {
+            performTapHaptic(it)
+            submitAgentConfirmation(approved = false)
         }
     }
 
@@ -207,6 +237,35 @@ class AssistantActivity : AppCompatActivity() {
 
     private fun toggleInputMode() {
         if (isKeyboardMode) enterVoiceMode() else enterKeyboardMode()
+    }
+
+    private fun toggleAgentMode() {
+        isAgentMode = !isAgentMode
+        renderAgentModeButton(currentState)
+        renderSubtitle()
+        renderBottomSections(currentState)
+        updateTranscriptHint()
+        if (currentState == UiState.AGENT_RESULT && !isAgentMode) {
+            setUiState(UiState.REVIEW)
+        }
+    }
+
+    private fun toggleThinkingDrawer() {
+        isThinkingExpanded = !isThinkingExpanded
+        binding.thinkingBodyText.visibility = visibleIf(isThinkingExpanded)
+        binding.thinkingHeaderText.setText(
+            if (isThinkingExpanded) {
+                R.string.assistant_thinking_header_expanded
+            } else {
+                R.string.assistant_thinking_header_collapsed
+            }
+        )
+    }
+
+    private fun updateTranscriptHint() {
+        binding.transcriptInput.setHint(
+            if (isAgentMode) R.string.assistant_agent_prompt_hint else R.string.assistant_transcript_hint
+        )
     }
 
     /** Stops any recording and lets the user type the text to send instead of dictating it. */
@@ -330,11 +389,157 @@ class AssistantActivity : AppCompatActivity() {
             showError(getString(R.string.assistant_empty_transcript))
             return
         }
+        if (isAgentMode) {
+            sendPromptToAgent(text)
+            return
+        }
         if (isLocalTargetSelected()) {
             sendToPhone(text)
         } else {
             sendTranscriptToPc(text)
         }
+    }
+
+    private fun sendPromptToAgent(prompt: String) {
+        val baseUrl = prefs.buildBaseUrl()
+        if (baseUrl == null) {
+            showError(getString(R.string.invalid_server_config))
+            return
+        }
+        clearError()
+        hideKeyboard()
+        setUiState(UiState.AGENT_THINKING)
+
+        val targetClientId = if (isLocalTargetSelected()) null else selectedClient?.id
+        activeJob?.cancel()
+        activeJob = lifecycleScope.launch {
+            val result = api.runAgent(
+                baseUrl = baseUrl,
+                prompt = prompt,
+                clientId = targetClientId,
+                sessionId = agentSessionId
+            )
+            result.onSuccess { response ->
+                handleAgentResponse(response)
+            }.onFailure { exc ->
+                showError(exc.message ?: getString(R.string.assistant_send_failed))
+                setUiState(UiState.REVIEW)
+            }
+        }
+    }
+
+    private fun submitAgentConfirmation(approved: Boolean) {
+        val baseUrl = prefs.buildBaseUrl() ?: return
+        val sessionId = agentSessionId ?: return
+        val pending = activeConfirmation ?: return
+
+        clearError()
+        setUiState(UiState.AGENT_THINKING)
+
+        val targetClientId = if (isLocalTargetSelected()) null else selectedClient?.id
+        activeJob?.cancel()
+        activeJob = lifecycleScope.launch {
+            val result = api.confirmAgentAction(
+                baseUrl = baseUrl,
+                sessionId = sessionId,
+                confirmationId = pending.confirmationId,
+                approved = approved,
+                clientId = targetClientId
+            )
+            result.onSuccess { response ->
+                handleAgentResponse(response)
+            }.onFailure { exc ->
+                showError(exc.message ?: getString(R.string.assistant_send_failed))
+                setUiState(UiState.AGENT_RESULT)
+            }
+        }
+    }
+
+    private fun handleAgentResponse(response: AgentResponse) {
+        if (response.sessionId.isNotEmpty()) {
+            agentSessionId = response.sessionId
+        }
+        activeConfirmation = response.pendingConfirmation
+
+        // Execute any native Android system intents (Idea #7)
+        val androidOutcomes = AndroidActionExecutor.executeAll(this, response.androidActions)
+
+        // Bind collapsible Thinking drawer (Idea #9)
+        val hasThinking = response.thinking.isNotBlank()
+        binding.thinkingDrawerCard.visibility = visibleIf(hasThinking)
+        binding.thinkingBodyText.text = response.thinking
+        isThinkingExpanded = false
+        binding.thinkingBodyText.visibility = View.GONE
+        binding.thinkingHeaderText.setText(R.string.assistant_thinking_header_collapsed)
+
+        // Bind Tool Execution Status Pills (Idea #9)
+        val allPills = ArrayList<AgentToolCallInfo>(response.toolCalls.size + androidOutcomes.size)
+        allPills.addAll(response.toolCalls)
+        for (outcome in androidOutcomes) {
+            allPills.add(AgentToolCallInfo(tool = "android", status = "ok", summary = outcome))
+        }
+        populateToolPills(allPills)
+
+        // Bind reply text
+        binding.agentReplyText.text = response.reply.ifBlank { getString(R.string.assistant_state_sent) }
+
+        // Bind Confirmation Gate card if a high-impact PC tool is waiting approval (Idea #10)
+        val pending = response.pendingConfirmation
+        if (pending != null) {
+            binding.confirmationDescriptionText.text = pending.description
+            binding.confirmationGateCard.visibility = View.VISIBLE
+        } else {
+            binding.confirmationGateCard.visibility = View.GONE
+        }
+
+        setUiState(UiState.AGENT_RESULT)
+    }
+
+    private fun populateToolPills(pills: List<AgentToolCallInfo>) {
+        binding.toolPillsGroup.removeAllViews()
+        if (pills.isEmpty()) {
+            binding.toolPillsScroll.visibility = View.GONE
+            return
+        }
+        binding.toolPillsScroll.visibility = View.VISIBLE
+        val chipBg = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.lw_pill_bg))
+        for (pill in pills) {
+            val prefix = when (pill.status) {
+                "ok", "queued_on_phone" -> "✓ "
+                "pending_confirmation" -> "⏳ "
+                "rejected", "error" -> "✕ "
+                else -> "• "
+            }
+            val textColorRes = when (pill.status) {
+                "ok", "queued_on_phone" -> R.color.lw_success
+                "pending_confirmation" -> R.color.lw_accent
+                "rejected", "error" -> R.color.lw_error
+                else -> R.color.lw_text_primary
+            }
+            val chip = Chip(this).apply {
+                text = prefix + pill.summary
+                textSize = 12f
+                isCheckable = false
+                isClickable = false
+                chipBackgroundColor = chipBg
+                chipStrokeWidth = 0f
+                setTextColor(ContextCompat.getColor(context, textColorRes))
+                setEnsureMinTouchTargetSize(false)
+            }
+            binding.toolPillsGroup.addView(chip)
+        }
+    }
+
+    private fun startKeyboardFollowUp() {
+        isKeyboardMode = true
+        binding.transcriptInput.setText("")
+        setUiState(UiState.REVIEW)
+        showKeyboard()
+    }
+
+    private fun startVoiceFollowUp() {
+        isKeyboardMode = false
+        startRecording()
     }
 
     /** Hands the text to LocalTypingService, which types it once the overlay has closed. */
@@ -468,7 +673,21 @@ class AssistantActivity : AppCompatActivity() {
         renderSubtitle()
         configureControls(state)
         renderModeToggle(state)
-        binding.transcriptInput.isEnabled = state != UiState.SENDING
+        renderAgentModeButton(state)
+        updateTranscriptHint()
+        binding.transcriptInput.isEnabled = state != UiState.SENDING && state != UiState.AGENT_THINKING
+    }
+
+    private fun renderAgentModeButton(state: UiState) {
+        val button = binding.agentModeButton
+        val available = when (state) {
+            UiState.RECORDING, UiState.REVIEW, UiState.AGENT_RESULT -> true
+            UiState.SETUP_REQUIRED -> prefs.buildBaseUrl() != null
+            UiState.TRANSCRIBING, UiState.SENDING, UiState.AGENT_THINKING, UiState.SENT -> false
+        }
+        button.visibility = if (available) View.VISIBLE else View.GONE
+        val tintRes = if (isAgentMode) R.color.lw_accent else R.color.lw_text_secondary
+        button.iconTint = ColorStateList.valueOf(ContextCompat.getColor(this, tintRes))
     }
 
     private fun renderModeToggle(state: UiState) {
@@ -477,7 +696,7 @@ class AssistantActivity : AppCompatActivity() {
             UiState.RECORDING, UiState.REVIEW -> true
             // Lets the user type when only the mic permission is missing.
             UiState.SETUP_REQUIRED -> !isKeyboardMode && prefs.buildBaseUrl() != null
-            UiState.TRANSCRIBING, UiState.SENDING, UiState.SENT -> false
+            UiState.TRANSCRIBING, UiState.SENDING, UiState.AGENT_THINKING, UiState.AGENT_RESULT, UiState.SENT -> false
         }
         button.visibility = if (available) View.VISIBLE else View.GONE
         button.setIconResource(if (isKeyboardMode) R.drawable.ic_mic else R.drawable.ic_keyboard)
@@ -488,38 +707,46 @@ class AssistantActivity : AppCompatActivity() {
 
     private fun renderArtwork(state: UiState) {
         binding.waveformView.visibility = visibleIf(state == UiState.RECORDING)
-        binding.transcribingSpinner.visibility = visibleIf(state == UiState.TRANSCRIBING)
+        binding.transcribingSpinner.visibility =
+            visibleIf(state == UiState.TRANSCRIBING || state == UiState.AGENT_THINKING)
         binding.transcriptInput.visibility =
             visibleIf(state == UiState.REVIEW || state == UiState.SENDING)
+        binding.agentResultScroll.visibility = visibleIf(state == UiState.AGENT_RESULT)
         binding.setupRequiredSection.visibility = visibleIf(state == UiState.SETUP_REQUIRED)
         binding.sentCheckIcon.visibility = visibleIf(state == UiState.SENT)
     }
 
     private fun renderBottomSections(state: UiState) {
         binding.progressSection.visibility = visibleIf(state == UiState.RECORDING)
-        // AHK key tokens only mean something on a PC, so the chips are hidden for the phone.
+        // AHK key tokens only mean something in raw PC dictation mode.
         binding.chipScroll.visibility = visibleIf(
-            (state == UiState.REVIEW || state == UiState.SENDING) && !isLocalTargetSelected()
+            (state == UiState.REVIEW || state == UiState.SENDING) &&
+                !isLocalTargetSelected() &&
+                !isAgentMode
         )
     }
 
     private fun renderSubtitle() {
         val state = currentState
         val subtitle = binding.targetPcText
-        subtitle.isClickable = state == UiState.RECORDING || state == UiState.REVIEW
+        subtitle.isClickable =
+            state == UiState.RECORDING || state == UiState.REVIEW || state == UiState.AGENT_RESULT
         subtitle.visibility = if (state == UiState.SETUP_REQUIRED) View.INVISIBLE else View.VISIBLE
         subtitle.text = when (state) {
             UiState.SETUP_REQUIRED -> ""
             UiState.TRANSCRIBING -> getString(R.string.assistant_model_hint)
+            UiState.AGENT_THINKING -> getString(R.string.assistant_agent_thinking_hint)
             UiState.SENT -> getString(R.string.assistant_sent_message, sentClientName)
-            UiState.RECORDING, UiState.REVIEW, UiState.SENDING -> targetDescription()
+            UiState.RECORDING, UiState.REVIEW, UiState.SENDING, UiState.AGENT_RESULT -> targetDescription()
         }
     }
 
     private fun targetDescription(): String {
         val client = selectedClient
+        val formatRes =
+            if (isAgentMode) R.string.assistant_agent_target_format else R.string.assistant_target_format
         return when {
-            client != null -> getString(R.string.assistant_target_format, client.name)
+            client != null -> getString(formatRes, client.name)
             clientsLoaded -> getString(R.string.assistant_no_pc_connected)
             else -> getString(R.string.assistant_target_loading)
         }
@@ -533,6 +760,9 @@ class AssistantActivity : AppCompatActivity() {
         UiState.REVIEW ->
             if (isKeyboardMode) R.string.assistant_state_typing else R.string.assistant_state_review
         UiState.SENDING -> R.string.assistant_state_sending
+        UiState.AGENT_THINKING -> R.string.assistant_state_thinking
+        UiState.AGENT_RESULT ->
+            if (activeConfirmation != null) R.string.assistant_state_confirm else R.string.assistant_state_agent_result
         UiState.SENT -> R.string.assistant_state_sent
     }
 
@@ -542,7 +772,7 @@ class AssistantActivity : AppCompatActivity() {
         bindControl(binding.controlCenter, controls.center)
         bindControl(binding.controlRight, controls.right)
 
-        val enabled = state != UiState.SENDING
+        val enabled = state != UiState.SENDING && state != UiState.AGENT_THINKING
         for (button in listOf(binding.controlLeft, binding.controlCenter, binding.controlRight)) {
             button.isEnabled = enabled
             button.alpha = if (enabled) 1f else DISABLED_ALPHA
@@ -553,6 +783,12 @@ class AssistantActivity : AppCompatActivity() {
         val close = ControlSpec(R.drawable.ic_close, R.string.assistant_cancel) { dismissOverlay() }
         val restart = ControlSpec(R.drawable.ic_restart, R.string.assistant_restart_desc) { startRecording() }
         val dictate = ControlSpec(R.drawable.ic_mic, R.string.assistant_voice_mode_desc) { enterVoiceMode() }
+        val followUpVoice = ControlSpec(R.drawable.ic_mic, R.string.assistant_follow_up_voice_desc) {
+            startVoiceFollowUp()
+        }
+        val followUpKeyboard = ControlSpec(R.drawable.ic_keyboard, R.string.assistant_follow_up_keyboard_desc) {
+            startKeyboardFollowUp()
+        }
         return when (state) {
             UiState.RECORDING -> ControlSet(
                 left = close,
@@ -564,7 +800,12 @@ class AssistantActivity : AppCompatActivity() {
                 center = ControlSpec(R.drawable.ic_send, R.string.assistant_send_to_pc) { sendTranscript() },
                 right = close
             )
-            UiState.TRANSCRIBING, UiState.SETUP_REQUIRED -> ControlSet(null, close, null)
+            UiState.AGENT_RESULT -> ControlSet(
+                left = followUpKeyboard,
+                center = followUpVoice,
+                right = close
+            )
+            UiState.TRANSCRIBING, UiState.AGENT_THINKING, UiState.SETUP_REQUIRED -> ControlSet(null, close, null)
             UiState.SENT -> ControlSet(null, null, null)
         }
     }

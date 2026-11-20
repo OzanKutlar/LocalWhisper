@@ -23,6 +23,8 @@
     <string name="row_launch_overlay_hint">Start dictating right now</string>
     <string name="row_keyboard_mode">Start in keyboard mode</string>
     <string name="row_keyboard_mode_hint">Open the assistant ready to type instead of listening</string>
+    <string name="row_agent_mode">Start in Agent mode</string>
+    <string name="row_agent_mode_hint">Use thinking LLM with PC &amp; Android tools by default</string>
     <string name="row_type_on_phone">Type on this phone</string>
     <string name="type_on_phone_active">Enabled. Pick This phone as the target</string>
     <string name="type_on_phone_inactive">Tap to enable LocalWhisper typing in Accessibility</string>
@@ -31,7 +33,7 @@
     <!-- Main screen: values and feedback -->
     <string name="testing_connection">Connecting to server…</string>
     <string name="connection_failed">Connection failed: %1$s</string>
-    <string name="health_summary">GPU: %1$s (%2$s)\nModel: %3$s\nPC clients: %4$s</string>
+    <string name="health_summary">GPU: %1$s (%2$s)\nASR: %3$s | Agent: %4$s\nPC clients: %5$s</string>
     <string name="health_no_clients">None (start pc_client/run_client.bat)</string>
     <string name="invalid_server_config">Please enter a valid server host and port (1–65535).</string>
     <string name="mic_permission_granted">Allowed</string>
@@ -57,12 +59,17 @@
     <string name="assistant_state_review">Review &amp; edit</string>
     <string name="assistant_state_typing">Type a message</string>
     <string name="assistant_state_sending">Sending…</string>
+    <string name="assistant_state_thinking">Thinking…</string>
+    <string name="assistant_state_agent_result">Agent response</string>
+    <string name="assistant_state_confirm">Confirm action</string>
     <string name="assistant_state_sent">Sent</string>
     <string name="assistant_state_error">Setup needed</string>
 
     <!-- Voice overlay: subtitle and target -->
     <string name="assistant_model_hint">Running Qwen3-ASR-1.7B on CUDA…</string>
+    <string name="assistant_agent_thinking_hint">Reasoning &amp; calling tools…</string>
     <string name="assistant_target_format">Target: %1$s</string>
+    <string name="assistant_agent_target_format">Agent → %1$s</string>
     <string name="assistant_target_loading">Looking for PC clients…</string>
     <string name="assistant_no_pc_connected">No PC client connected</string>
     <string name="assistant_pick_target">Send text to</string>
@@ -80,6 +87,15 @@
     <string name="assistant_transcript_hint">Transcript (supports AHK keys like {Enter})</string>
     <string name="assistant_keyboard_mode_desc">Type instead of speaking</string>
     <string name="assistant_voice_mode_desc">Dictate instead of typing</string>
+    <string name="assistant_agent_mode_desc">Toggle thinking Agent mode</string>
+    <string name="assistant_agent_prompt_hint">Ask the Agent (PC macros, apps, media, or phone timers/alarms)…</string>
+    <string name="assistant_thinking_header_collapsed">Thinking process (tap to view)</string>
+    <string name="assistant_thinking_header_expanded">Thinking process (tap to hide)</string>
+    <string name="assistant_confirm_title">Approval required for PC action</string>
+    <string name="assistant_confirm_approve">Approve</string>
+    <string name="assistant_confirm_reject">Reject</string>
+    <string name="assistant_follow_up_voice_desc">Ask a voice follow-up</string>
+    <string name="assistant_follow_up_keyboard_desc">Type a follow-up</string>
 
     <!-- Voice overlay: errors -->
     <string name="assistant_mic_required">Microphone permission is required. Open LocalWhisper to grant it.</string>
