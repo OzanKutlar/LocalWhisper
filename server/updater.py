@@ -143,10 +143,23 @@ def is_port_free(host: str, port: int) -> bool:
         return sock.connect_ex((bind_host, port)) != 0
 
 
+def wait_for_port_free(host: str, port: int, timeout_s: float = WAIT_EXIT_TIMEOUT_S) -> None:
+    bounded_timeout = max(0.0, timeout_s)
+    deadline = time.monotonic() + bounded_timeout
+    max_checks = max(1, int(bounded_timeout / 0.15) + 2)
+    for _ in range(max_checks):
+        if is_port_free(host, port) or time.monotonic() >= deadline:
+            return
+        time.sleep(0.15)
+
+
 def wait_for_server_close(parent_pid: int, host: str, port: int) -> None:
     deadline = time.monotonic() + WAIT_EXIT_TIMEOUT_S
-    while time.monotonic() < deadline:
+    max_checks = int(WAIT_EXIT_TIMEOUT_S / 0.15) + 2
+    for _ in range(max_checks):
         if not is_pid_running(parent_pid) and is_port_free(host, port):
+            return
+        if time.monotonic() >= deadline:
             return
         time.sleep(0.15)
 
@@ -207,44 +220,45 @@ def relaunch_main_server(relaunch_args: list[str]) -> None:
         )
 
 
-def execute_update_workflow(
-    parent_pid: int,
+def _parse_port(raw_port: Any, default: int = 8765) -> int:
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError):
+        return default
+    return port if 1 <= port <= 65535 else default
+
+
+def _run_pull_and_finalize(
     host: str,
     port: int,
     repo_dir: Path,
     update_id: str,
-    relaunch_args: list[str],
-) -> None:
-    old_commit = get_git_commit(repo_dir)
+    old_commit: str,
+    state_path: Path = LAST_UPDATE_FILE,
+    echo_output: bool = False,
+    hold_after_pull_s: float = STATUS_HOLD_AFTER_PULL_S,
+) -> dict[str, Any]:
     state_lock = threading.Lock()
     shared_state: dict[str, Any] = {
         "update_id": update_id,
-        "phase": "closing",
+        "phase": "git_pull",
         "ok": True,
-        "message": "Waiting for server to close...",
+        "message": "Server closed. Running git pull...",
         "old_commit": old_commit,
         "new_commit": old_commit,
         "git_output": "",
         "git_summary": "",
+        "host": host,
+        "port": port,
         "updated_at": time.time(),
     }
-    write_update_state(shared_state)
-
-    wait_for_server_close(parent_pid, host, port)
-
-    with state_lock:
-        shared_state.update(
-            {
-                "phase": "git_pull",
-                "message": "Server closed. Running git pull...",
-                "updated_at": time.time(),
-            }
-        )
-    write_update_state(shared_state)
+    write_update_state(shared_state, path=state_path)
 
     temp_server = start_temporary_status_server(host, port, shared_state, state_lock)
     try:
         git_ok, git_output, git_summary = run_git_pull(repo_dir)
+        if echo_output and git_output:
+            print(git_output, flush=True)
         new_commit = get_git_commit(repo_dir)
         with state_lock:
             shared_state.update(
@@ -258,8 +272,9 @@ def execute_update_workflow(
                     "updated_at": time.time(),
                 }
             )
-        write_update_state(shared_state)
-        time.sleep(STATUS_HOLD_AFTER_PULL_S)
+        write_update_state(shared_state, path=state_path)
+        if hold_after_pull_s > 0:
+            time.sleep(hold_after_pull_s)
     finally:
         if temp_server is not None:
             try:
@@ -277,24 +292,98 @@ def execute_update_workflow(
             f"{final_file_state['git_summary']}"
         )
         final_file_state["updated_at"] = time.time()
-    write_update_state(final_file_state)
+    write_update_state(final_file_state, path=state_path)
+    return final_file_state
 
+
+def execute_in_place_update(
+    repo_dir: Path,
+    state_path: Path = LAST_UPDATE_FILE,
+    hold_after_pull_s: float = STATUS_HOLD_AFTER_PULL_S,
+) -> dict[str, Any]:
+    """Runs git pull and live status reporting inside the existing supervisor console."""
+    saved = read_update_state(path=state_path)
+    update_id = str(saved.get("update_id") or "")
+    old_commit = str(saved.get("old_commit") or "") or get_git_commit(repo_dir)
+    host = str(saved.get("host") or "0.0.0.0").strip() or "0.0.0.0"
+    port = _parse_port(saved.get("port"), default=8765)
+
+    wait_for_port_free(host, port)
+    return _run_pull_and_finalize(
+        host=host,
+        port=port,
+        repo_dir=repo_dir,
+        update_id=update_id,
+        old_commit=old_commit,
+        state_path=state_path,
+        echo_output=True,
+        hold_after_pull_s=hold_after_pull_s,
+    )
+
+
+def execute_update_workflow(
+    parent_pid: int,
+    host: str,
+    port: int,
+    repo_dir: Path,
+    update_id: str,
+    relaunch_args: list[str],
+) -> None:
+    old_commit = get_git_commit(repo_dir)
+    write_update_state(
+        {
+            "update_id": update_id,
+            "phase": "closing",
+            "ok": True,
+            "message": "Waiting for server to close...",
+            "old_commit": old_commit,
+            "new_commit": old_commit,
+            "git_output": "",
+            "git_summary": "",
+            "host": host,
+            "port": port,
+            "updated_at": time.time(),
+        }
+    )
+
+    wait_for_server_close(parent_pid, host, port)
+    _run_pull_and_finalize(
+        host=host,
+        port=port,
+        repo_dir=repo_dir,
+        update_id=update_id,
+        old_commit=old_commit,
+    )
     relaunch_main_server(relaunch_args)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="LocalWhisper detached server updater.")
-    parser.add_argument("--parent-pid", type=int, required=True)
+    parser = argparse.ArgumentParser(description="LocalWhisper server updater.")
+    parser.add_argument(
+        "--in-place",
+        action="store_true",
+        help="Run git pull in the current console without spawning a new server window.",
+    )
+    parser.add_argument("--parent-pid", type=int, default=0)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--repo-dir", default=str(REPO_ROOT))
-    parser.add_argument("--update-id", required=True)
+    parser.add_argument("--update-id", default="")
     parser.add_argument("--relaunch-args-json", default="[]")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    repo_dir = Path(args.repo_dir).resolve()
+    if args.in_place:
+        execute_in_place_update(repo_dir=repo_dir)
+        return 0
+
+    if args.parent_pid <= 0 or not args.update_id:
+        LOGGER.error("--parent-pid and --update-id are required unless --in-place is used")
+        return 2
+
     try:
         relaunch_args = json.loads(args.relaunch_args_json)
         if not isinstance(relaunch_args, list):
@@ -306,7 +395,7 @@ def main() -> int:
         parent_pid=args.parent_pid,
         host=args.host,
         port=args.port,
-        repo_dir=Path(args.repo_dir).resolve(),
+        repo_dir=repo_dir,
         update_id=args.update_id,
         relaunch_args=[str(a) for a in relaunch_args],
     )

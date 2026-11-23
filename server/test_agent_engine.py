@@ -603,7 +603,7 @@ class ConfirmationResumeTests(unittest.IsolatedAsyncioTestCase):
             approved=True,
         )
         self.assertEqual(resumed.status, "completed")
-        self.assertEqual(result.android_actions, [])
+        self.assertEqual(resumed.android_actions, [])
         self.assertEqual(hub.calls[-1][0], "manage_pc_app")
 
 

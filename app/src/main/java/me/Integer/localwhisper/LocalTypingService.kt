@@ -87,7 +87,7 @@ class LocalTypingService : AccessibilityService() {
         }
         handler.removeCallbacks(attemptRunnable)
         pendingText = null
-        cachedNodesById.clear()
+        cachedNodesById = emptyMap()
     }
 
     // ------------------------------------------------------------ Scheduling

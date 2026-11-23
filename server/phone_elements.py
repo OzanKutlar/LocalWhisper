@@ -65,10 +65,7 @@ class PhoneElement:
         if self.focused:
             tags.append("focused")
         tag_str = f" [{', '.join(tags)}]" if tags else ""
-        return f'{self.element_id} "{self.display_label() secure_quote}" ({self.x},{self.y} {self.w}x{self.h})'.replace(
-            f'"{self.display_label() secure_quote}"',
-            f'"{self.display_label()}"{tag_str}',
-        )
+        return f'{self.element_id} "{self.display_label()}"{tag_str} ({self.x},{self.y} {self.w}x{self.h})'
 
     def to_dict(self) -> dict[str, Any]:
         return {

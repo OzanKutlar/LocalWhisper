@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -50,6 +51,8 @@ DEFAULT_DEVICE = os.environ.get("LOCALWHISPER_DEVICE", "cuda:0")
 DEFAULT_LLM_BASE_URL = os.environ.get("LOCALWHISPER_LLM_BASE_URL", "http://127.0.0.1:34501/v1")
 DEFAULT_LLM_MODEL = os.environ.get("LOCALWHISPER_LLM_MODEL", "llama-server")
 DEFAULT_LLM_API_KEY = os.environ.get("LOCALWHISPER_LLM_API_KEY", "local")
+UPDATE_EXIT_CODE = 42
+SUPERVISED_ENV_VAR = "LOCALWHISPER_SUPERVISED"
 
 
 class SendKeystrokesRequest(BaseModel):
@@ -83,6 +86,7 @@ def create_app(
     bind_host: str = DEFAULT_HOST,
     bind_port: int = DEFAULT_PORT,
     relaunch_args: list[str] | None = None,
+    on_update_exit: Callable[[], None] | None = None,
 ) -> FastAPI:
     asr_engine = AsrEngine(model_id=model_id, device=device)
     client_hub = ClientHub()
@@ -167,45 +171,56 @@ def create_app(
             "new_commit": old_commit,
             "git_output": "",
             "git_summary": "",
+            "host": bind_host,
+            "port": bind_port,
             "updated_at": time.time(),
         }
         await asyncio.to_thread(write_update_state, initial_state)
 
-        updater_script = SERVER_DIR / "updater.py"
-        args_for_relaunch = relaunch_args if relaunch_args is not None else sys.argv[1:]
-        cmd = [
-            sys.executable,
-            str(updater_script),
-            "--parent-pid",
-            str(os.getpid()),
-            "--host",
-            bind_host,
-            "--port",
-            str(bind_port),
-            "--repo-dir",
-            str(REPO_ROOT),
-            "--update-id",
-            active_update_id,
-            "--relaunch-args-json",
-            json.dumps(args_for_relaunch),
-        ]
-        if os.name == "nt":
-            subprocess.Popen(
-                cmd,
-                cwd=str(REPO_ROOT),
-                creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
-            )
-        else:
-            subprocess.Popen(cmd, cwd=str(REPO_ROOT), start_new_session=True)
+        supervised = os.environ.get(SUPERVISED_ENV_VAR) == "1"
+        if not supervised:
+            updater_script = SERVER_DIR / "updater.py"
+            args_for_relaunch = relaunch_args if relaunch_args is not None else sys.argv[1:]
+            cmd = [
+                sys.executable,
+                str(updater_script),
+                "--parent-pid",
+                str(os.getpid()),
+                "--host",
+                bind_host,
+                "--port",
+                str(bind_port),
+                "--repo-dir",
+                str(REPO_ROOT),
+                "--update-id",
+                active_update_id,
+                "--relaunch-args-json",
+                json.dumps(args_for_relaunch),
+            ]
+            if os.name == "nt":
+                subprocess.Popen(
+                    cmd,
+                    cwd=str(REPO_ROOT),
+                    creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                )
+            else:
+                subprocess.Popen(cmd, cwd=str(REPO_ROOT), start_new_session=True)
+
+        exit_code = UPDATE_EXIT_CODE if supervised else 0
 
         def _terminate_self() -> None:
             time.sleep(0.3)
             LOGGER.info("Closing server for git pull update [update_id=%s]...", active_update_id)
-            threading.Timer(1.2, lambda: os._exit(0)).start()
+            threading.Timer(1.5, lambda: os._exit(exit_code)).start()
+            if supervised and on_update_exit is not None:
+                on_update_exit()
+                return
+            if supervised:
+                os._exit(exit_code)
             try:
                 os.kill(os.getpid(), signal.SIGINT)
             except Exception:
-                os._exit(0)
+                os._exit(exit_code)
 
         threading.Thread(target=_terminate_self, daemon=True).start()
         return {
@@ -405,6 +420,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    update_exit_requested = False
+    server_holder: dict[str, uvicorn.Server] = {}
+
+    def _request_update_exit() -> None:
+        nonlocal update_exit_requested
+        update_exit_requested = True
+        srv = server_holder.get("server")
+        if srv is not None:
+            srv.should_exit = True
+
     app = create_app(
         model_id=args.model,
         device=args.device,
@@ -414,8 +439,14 @@ def main() -> None:
         bind_host=args.host,
         bind_port=args.port,
         relaunch_args=sys.argv[1:],
+        on_update_exit=_request_update_exit,
     )
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
+    server = uvicorn.Server(config)
+    server_holder["server"] = server
+    server.run()
+    if update_exit_requested:
+        sys.exit(UPDATE_EXIT_CODE)
 
 
 if __name__ == "__main__":
