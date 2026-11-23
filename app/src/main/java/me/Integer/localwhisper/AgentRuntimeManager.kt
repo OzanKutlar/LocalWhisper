@@ -52,6 +52,9 @@ data class AgentRuntimeState(
 /**
  * Process-scoped manager that owns the active Agent streaming coroutine so runs survive
  * closing AssistantActivity and can execute phone UI actions while the target app is active.
+ *
+ * Pausing holds anything that acts on the phone (automatic phone steps and Android intents),
+ * but never an approval: a pending confirmation is shown as soon as the server sends it.
  */
 object AgentRuntimeManager {
 
@@ -77,6 +80,13 @@ object AgentRuntimeManager {
     private var appContext: Context? = null
 
     private var activeJob: Job? = null
+
+    /** One server response after its phone intents ran and its turn was saved. */
+    private data class AppliedTurn(
+        val sessionId: String,
+        val timeline: List<TimelineEntry>,
+        val reply: String
+    )
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -152,13 +162,12 @@ object AgentRuntimeManager {
         val targetClientId = prefs.selectedClientId.takeIf {
             it.isNotBlank() && it != LOCAL_TARGET_ID
         }
-        val isPhoneTarget = current.isPhoneFocused || targetClientId == null
         startTurn(
             context = ctx,
             prompt = clean,
-            clientId = if (isPhoneTarget) null else targetClientId,
+            clientId = targetClientId,
             sessionId = current.sessionId,
-            isPhoneTarget = isPhoneTarget,
+            isPhoneTarget = current.isPhoneFocused || targetClientId == null,
             waitForActivityHide = waitForActivityHide,
             interjection = true
         )
@@ -203,7 +212,11 @@ object AgentRuntimeManager {
                 reply = "",
                 pendingConfirmation = null,
                 errorMessage = null,
-                stepSummary = if (interjection) "Redirecting…" else if (isPhoneTarget) "Reading screen…" else "Thinking…",
+                stepSummary = when {
+                    interjection -> "Redirecting…"
+                    isPhoneTarget -> "Reading screen…"
+                    else -> "Thinking…"
+                },
                 isConfirmationResume = false,
                 isPhoneFocused = isPhoneTarget
             )
@@ -253,12 +266,28 @@ object AgentRuntimeManager {
     }
 
     fun submitConfirmation(approved: Boolean, rejectionReason: String? = null) {
-        val ctx = appContext ?: return
+        val ctx = appContext
+        if (ctx == null) {
+            Log.w(TAG, "submitConfirmation ignored: runtime is not initialised")
+            return
+        }
         val current = _state.value
-        val sessionId = current.sessionId ?: return
-        val pending = current.pendingConfirmation ?: return
+        val sessionId = current.sessionId
+        val pending = current.pendingConfirmation
+        if (sessionId == null || pending == null) {
+            Log.w(TAG, "submitConfirmation ignored: no pending approval (phase=${current.phase})")
+            return
+        }
         val prefs = ServerPreferences(ctx)
-        val baseUrl = prefs.buildBaseUrl() ?: return
+        val baseUrl = prefs.buildBaseUrl()
+        if (baseUrl == null) {
+            handleFailure(
+                ctx,
+                IllegalStateException(ctx.getString(R.string.invalid_server_config)),
+                fallbackToResult = true
+            )
+            return
+        }
         val targetClientId = prefs.selectedClientId.takeIf {
             it.isNotBlank() && it != LOCAL_TARGET_ID
         }
@@ -292,7 +321,6 @@ object AgentRuntimeManager {
                     ensureActivityMinimizedForPhoneWork()
                     pauseGate.awaitUnpaused()
                     phoneActionResult = LocalTypingService.executePhoneUiAction(pending.phoneAction)
-                    pauseGate.awaitUnpaused()
                     updatedPhoneScreen = LocalTypingService.capturePhoneScreenSnapshot()
                 }
                 val result = api.confirmAgentActionStream(
@@ -326,6 +354,10 @@ object AgentRuntimeManager {
         }
     }
 
+    /**
+     * Applies each server response and runs automatic phone steps until the turn completes
+     * or needs the user. Bounded: every pass returns or runs exactly one automatic step.
+     */
     private suspend fun runAgentLoopFromResponse(
         baseUrl: String,
         initialResponse: AgentResponse,
@@ -333,127 +365,187 @@ object AgentRuntimeManager {
         targetClientId: String?,
         ctx: Context
     ) {
-        val sessionStore = AgentSessionStore(ctx)
         var response = initialResponse
         var isResume = initialIsResume
 
-        for (autoStep in 0 until MAX_AUTO_EXECUTE_STEPS) {
-            pauseGate.awaitUnpaused()
-            val resolvedSessionId = response.sessionId.ifEmpty {
-                _state.value.sessionId ?: sessionStore.startNewSession()
-            }
-            if (response.androidActions.isNotEmpty()) {
-                ensureActivityMinimizedForPhoneWork()
-                pauseGate.awaitUnpaused()
-            }
-            val androidOutcomes = AndroidActionExecutor.executeAll(ctx, response.androidActions)
-            val timeline = response.timeline
-                .ifEmpty { AgentTimeline.fromLegacy(response.thinking, response.toolCalls) }
-                .toMutableList()
-            for (outcome in androidOutcomes) {
-                timeline.add(
-                    TimelineEntry.Tool(
-                        tool = AgentTimeline.LOCAL_TOOL_NAME,
-                        status = "ok",
-                        summary = outcome,
-                        local = true
-                    )
-                )
-            }
-
-            val replyText = response.reply.ifBlank { ctx.getString(R.string.assistant_state_sent) }
-            val turn = AgentChatTurn(
-                userPrompt = _state.value.userPrompt,
-                thinking = AgentTimeline.thinkingText(timeline),
-                toolCalls = AgentTimeline.toolCalls(timeline),
-                reply = replyText,
-                timeline = timeline
-            )
-            if (isResume) {
-                sessionStore.updateLastTurn(resolvedSessionId, turn)
-            } else {
-                sessionStore.recordTurn(resolvedSessionId, turn)
-            }
-
+        for (autoStepsUsed in 0..MAX_AUTO_EXECUTE_STEPS) {
+            val applied = applyAgentResponse(ctx, response, isResume)
             val pending = response.pendingConfirmation
-            if (pending != null && pending.autoExecute && pending.phoneAction != null) {
-                _state.update {
-                    it.copy(
-                        sessionId = resolvedSessionId,
-                        timeline = timeline,
-                        reply = replyText,
-                        pendingConfirmation = pending,
-                        isPhoneFocused = true,
-                        stepSummary = shorten(pending.description.ifBlank { "Working on phone…" })
-                    )
-                }
-                pauseGate.awaitUnpaused()
-                ensureActivityMinimizedForPhoneWork()
-                pauseGate.awaitUnpaused()
-                val phoneActionResult = LocalTypingService.executePhoneUiAction(pending.phoneAction)
-                pauseGate.awaitUnpaused()
-                val updatedPhoneScreen = LocalTypingService.capturePhoneScreenSnapshot()
-                _state.update {
-                    it.copy(
-                        phase = if (pauseGate.isPaused) AgentRuntimePhase.PAUSED else AgentRuntimePhase.THINKING,
-                        pendingConfirmation = null,
-                        isConfirmationResume = true,
-                        stepSummary = if (pauseGate.isPaused) "Paused" else "Thinking…"
-                    )
-                }
-                val nextResult = api.confirmAgentActionStream(
-                    baseUrl = baseUrl,
-                    sessionId = resolvedSessionId,
-                    confirmationId = pending.confirmationId,
-                    approved = true,
-                    clientId = targetClientId,
-                    initialTimeline = timeline,
-                    phoneScreen = updatedPhoneScreen,
-                    phoneActionResult = phoneActionResult,
-                    onProgress = { progress -> applyStreamProgress(progress) }
-                )
-                response = nextResult.getOrElse { exc ->
-                    handleFailure(ctx, exc, fallbackToResult = true)
-                    return
-                }
-                isResume = true
-                continue
-            }
-
-            if (pending != null) {
-                _state.update {
-                    it.copy(
-                        phase = AgentRuntimePhase.WAITING_CONFIRMATION,
-                        sessionId = resolvedSessionId,
-                        timeline = timeline,
-                        reply = replyText,
-                        pendingConfirmation = pending,
-                        isPhoneFocused = it.isPhoneFocused || pending.phoneAction != null,
-                        errorMessage = null,
-                        stepSummary = ctx.getString(R.string.overlay_pill_confirm)
-                    )
-                }
+            if (pending == null) {
+                markCompleted(ctx, applied)
                 return
             }
-
-            _state.update {
-                it.copy(
-                    phase = AgentRuntimePhase.COMPLETED,
-                    sessionId = resolvedSessionId,
-                    timeline = timeline,
-                    reply = replyText,
-                    pendingConfirmation = null,
-                    errorMessage = null,
-                    stepSummary = ctx.getString(R.string.overlay_pill_done)
-                )
+            val autoAction = pending.phoneAction?.takeIf { pending.autoExecute }
+            if (autoAction == null) {
+                surfaceConfirmation(ctx, applied, pending)
+                return
             }
-            return
+            if (AutoStepPolicy.shouldAskToContinue(autoStepsUsed, MAX_AUTO_EXECUTE_STEPS)) {
+                surfaceConfirmation(ctx, applied, askToContinue(ctx, pending))
+                return
+            }
+            val next = runAutoPhoneStep(baseUrl, applied, pending, autoAction, targetClientId)
+            response = next.getOrElse { exc ->
+                handleFailure(ctx, exc, fallbackToResult = true)
+                return
+            }
+            isResume = true
         }
 
+        Log.w(TAG, "Automatic step loop ended without a final state; marking the turn done")
         _state.update {
             it.copy(
                 phase = AgentRuntimePhase.COMPLETED,
                 pendingConfirmation = null,
+                stepSummary = ctx.getString(R.string.overlay_pill_done)
+            )
+        }
+    }
+
+    /** Runs the response's phone intents, then saves the turn to the session store. */
+    private suspend fun applyAgentResponse(
+        ctx: Context,
+        response: AgentResponse,
+        isResume: Boolean
+    ): AppliedTurn {
+        val sessionStore = AgentSessionStore(ctx)
+        val resolvedSessionId = response.sessionId.ifEmpty {
+            _state.value.sessionId ?: sessionStore.startNewSession()
+        }
+        val androidOutcomes = runAndroidActions(ctx, response.androidActions)
+        val timeline = response.timeline
+            .ifEmpty { AgentTimeline.fromLegacy(response.thinking, response.toolCalls) }
+            .toMutableList()
+        for (outcome in androidOutcomes) {
+            timeline.add(
+                TimelineEntry.Tool(
+                    tool = AgentTimeline.LOCAL_TOOL_NAME,
+                    status = "ok",
+                    summary = outcome,
+                    local = true
+                )
+            )
+        }
+
+        val replyText = response.reply.ifBlank { ctx.getString(R.string.assistant_state_sent) }
+        val turn = AgentChatTurn(
+            userPrompt = _state.value.userPrompt,
+            thinking = AgentTimeline.thinkingText(timeline),
+            toolCalls = AgentTimeline.toolCalls(timeline),
+            reply = replyText,
+            timeline = timeline
+        )
+        if (isResume) {
+            sessionStore.updateLastTurn(resolvedSessionId, turn)
+        } else {
+            sessionStore.recordTurn(resolvedSessionId, turn)
+        }
+        return AppliedTurn(sessionId = resolvedSessionId, timeline = timeline.toList(), reply = replyText)
+    }
+
+    /** Android intents act on the phone, so they wait while the user has paused the agent. */
+    private suspend fun runAndroidActions(
+        ctx: Context,
+        actions: List<AndroidClientAction>
+    ): List<String> {
+        if (actions.isEmpty()) return emptyList()
+        pauseGate.awaitUnpaused()
+        ensureActivityMinimizedForPhoneWork()
+        pauseGate.awaitUnpaused()
+        return AndroidActionExecutor.executeAll(ctx, actions)
+    }
+
+    /** Runs one automatic phone step (screen capture or scroll) and resumes the server turn. */
+    private suspend fun runAutoPhoneStep(
+        baseUrl: String,
+        applied: AppliedTurn,
+        pending: PendingConfirmationInfo,
+        phoneAction: JSONObject,
+        targetClientId: String?
+    ): Result<AgentResponse> {
+        _state.update {
+            it.copy(
+                sessionId = applied.sessionId,
+                timeline = applied.timeline,
+                reply = applied.reply,
+                pendingConfirmation = null,
+                isPhoneFocused = true,
+                stepSummary = if (pauseGate.isPaused) {
+                    "Paused"
+                } else {
+                    shorten(pending.description.ifBlank { "Working on phone…" })
+                }
+            )
+        }
+        pauseGate.awaitUnpaused()
+        ensureActivityMinimizedForPhoneWork()
+        pauseGate.awaitUnpaused()
+        val phoneActionResult = LocalTypingService.executePhoneUiAction(phoneAction)
+        val updatedPhoneScreen = LocalTypingService.capturePhoneScreenSnapshot()
+        _state.update {
+            it.copy(
+                phase = if (pauseGate.isPaused) AgentRuntimePhase.PAUSED else AgentRuntimePhase.THINKING,
+                isConfirmationResume = true,
+                stepSummary = if (pauseGate.isPaused) "Paused" else "Thinking…"
+            )
+        }
+        return api.confirmAgentActionStream(
+            baseUrl = baseUrl,
+            sessionId = applied.sessionId,
+            confirmationId = pending.confirmationId,
+            approved = true,
+            clientId = targetClientId,
+            initialTimeline = applied.timeline,
+            phoneScreen = updatedPhoneScreen,
+            phoneActionResult = phoneActionResult,
+            onProgress = { progress -> applyStreamProgress(progress) }
+        )
+    }
+
+    /** Shows an approval immediately; an approval is itself a stopping point, so any pause is cleared. */
+    private fun surfaceConfirmation(
+        ctx: Context,
+        applied: AppliedTurn,
+        pending: PendingConfirmationInfo
+    ) {
+        pauseGate.resume()
+        _state.update {
+            it.copy(
+                phase = AgentRuntimePhase.WAITING_CONFIRMATION,
+                sessionId = applied.sessionId,
+                timeline = applied.timeline,
+                reply = applied.reply,
+                pendingConfirmation = pending,
+                isPhoneFocused = it.isPhoneFocused || pending.phoneAction != null,
+                errorMessage = null,
+                stepSummary = ctx.getString(R.string.overlay_pill_confirm)
+            )
+        }
+    }
+
+    /** Turns an automatic step into a normal approval once the automatic step limit is reached. */
+    private fun askToContinue(ctx: Context, pending: PendingConfirmationInfo): PendingConfirmationInfo {
+        val next = pending.description.ifBlank { "phone action" }
+        return pending.copy(
+            autoExecute = false,
+            description = ctx.getString(
+                R.string.agent_auto_step_limit_confirm,
+                MAX_AUTO_EXECUTE_STEPS,
+                next
+            )
+        )
+    }
+
+    private fun markCompleted(ctx: Context, applied: AppliedTurn) {
+        pauseGate.resume()
+        _state.update {
+            it.copy(
+                phase = AgentRuntimePhase.COMPLETED,
+                sessionId = applied.sessionId,
+                timeline = applied.timeline,
+                reply = applied.reply,
+                pendingConfirmation = null,
+                errorMessage = null,
                 stepSummary = ctx.getString(R.string.overlay_pill_done)
             )
         }
@@ -490,6 +582,7 @@ object AgentRuntimeManager {
 
     private fun handleFailure(ctx: Context, exc: Throwable, fallbackToResult: Boolean) {
         Log.w(TAG, "Agent runtime failed", exc)
+        pauseGate.resume()
         val message = exc.message ?: ctx.getString(R.string.assistant_send_failed)
         _state.update { current ->
             current.copy(

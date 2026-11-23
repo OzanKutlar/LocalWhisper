@@ -127,6 +127,8 @@
     <string name="overlay_pill_thinking">Agent working…</string>
     <string name="overlay_pill_paused">Paused</string>
     <string name="overlay_pill_confirm">Confirm action</string>
+    <string name="overlay_pill_confirm_hidden">Approval hidden · tap</string>
+    <string name="agent_auto_step_limit_confirm">The agent has run %1$d automatic phone steps in a row. Continue? Next: %2$s</string>
     <string name="overlay_pill_done">Done · tap to view</string>
     <string name="overlay_pill_error">Error · tap to view</string>
     <string name="overlay_action_resume">Resume</string>

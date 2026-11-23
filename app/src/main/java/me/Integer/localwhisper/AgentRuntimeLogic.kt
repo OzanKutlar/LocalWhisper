@@ -28,6 +28,16 @@ class PauseGate {
     }
 }
 
+/** Decides when a run of automatic phone steps should stop and ask the user to continue. */
+object AutoStepPolicy {
+
+    /** True once [autoStepsUsed] automatic steps have run in a row; a non-positive cap always asks. */
+    fun shouldAskToContinue(autoStepsUsed: Int, cap: Int): Boolean {
+        if (cap <= 0) return true
+        return autoStepsUsed.coerceAtLeast(0) >= cap
+    }
+}
+
 /** Pure layout calculations for the floating corner pill and confirmation card. */
 object OverlayGeometry {
 

@@ -154,7 +154,11 @@ class AgentOverlayController(private val service: AccessibilityService) {
                 icon.setImageResource(R.drawable.ic_sparkle)
                 icon.imageTintList = colorStateList(R.color.lw_record_coral)
                 dismissIcon.visibility = View.GONE
-                label.setText(R.string.overlay_pill_confirm)
+                val cardHidden = state.pendingConfirmation?.confirmationId
+                    ?.let { it == confirmCardHiddenForId } == true
+                label.setText(
+                    if (cardHidden) R.string.overlay_pill_confirm_hidden else R.string.overlay_pill_confirm
+                )
             }
             AgentRuntimePhase.COMPLETED -> {
                 spinner.visibility = View.GONE
@@ -419,6 +423,7 @@ class AgentOverlayController(private val service: AccessibilityService) {
                 val confId = lastState.pendingConfirmation?.confirmationId
                 confirmCardHiddenForId = if (confirmCardHiddenForId == confId) null else confId
                 renderConfirmationAndHighlight(lastState)
+                renderPill(lastState)
             }
             AgentRuntimePhase.COMPLETED, AgentRuntimePhase.ERROR -> {
                 openAssistantActivity()

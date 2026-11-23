@@ -29,6 +29,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.widget.doOnTextChanged
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -108,6 +109,7 @@ class AssistantActivity : AppCompatActivity() {
     private var liveTurnKey: String? = null
     private var isAgentPaused = false
     private var lastConfirmationId: String? = null
+    private var interjectHadText = false
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
@@ -229,10 +231,8 @@ class AssistantActivity : AppCompatActivity() {
             hideKeyboard()
             submitAgentConfirmation(approved = false, rejectionReason = reason.ifEmpty { null })
         }
-        binding.interjectInput.setOnFocusChangeListener { _, hasFocus ->
-            if (hasFocus && AgentRuntimeManager.state.value.phase == AgentRuntimePhase.THINKING) {
-                AgentRuntimeManager.pause()
-            }
+        binding.interjectInput.doOnTextChanged { text, _, _, _ ->
+            onInterjectTextChanged(text)
         }
         binding.interjectInput.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEND) {
@@ -547,10 +547,24 @@ class AssistantActivity : AppCompatActivity() {
                 binding.rejectionReasonInput.post {
                     if (binding.confirmationGateCard.visibility == View.VISIBLE) {
                         showKeyboardFor(binding.rejectionReasonInput)
-                        binding.agentResultScroll.fullScroll(View.FOCUS_DOWN)
+                        scrollAgentToBottom()
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Pauses the agent when the user starts typing a correction. Focus alone never pauses it,
+     * because Android can move focus into this box on its own when views are rebuilt.
+     */
+    private fun onInterjectTextChanged(text: CharSequence?) {
+        val hasText = !text.isNullOrBlank()
+        val startedTyping = hasText && !interjectHadText
+        interjectHadText = hasText
+        if (!startedTyping || !binding.interjectInput.hasFocus()) return
+        if (AgentRuntimeManager.state.value.phase == AgentRuntimePhase.THINKING) {
+            AgentRuntimeManager.pause()
         }
     }
 
@@ -1152,8 +1166,22 @@ class AssistantActivity : AppCompatActivity() {
                 binding.agentResultScroll.layoutParams = params
             }
             if (scrollToBottom) {
-                binding.agentResultScroll.fullScroll(View.FOCUS_DOWN)
+                scrollAgentToBottom()
             }
+        }
+    }
+
+    /**
+     * Scrolls the agent thread to its end without touching input focus. ScrollView.fullScroll()
+     * moves focus to a focusable view, which landed on the interject box and paused the agent.
+     */
+    private fun scrollAgentToBottom() {
+        val scroll = binding.agentResultScroll
+        scroll.post {
+            val content = scroll.getChildAt(0) ?: return@post
+            val bottom = (content.height + scroll.paddingTop + scroll.paddingBottom - scroll.height)
+                .coerceAtLeast(0)
+            scroll.scrollTo(0, bottom)
         }
     }
 

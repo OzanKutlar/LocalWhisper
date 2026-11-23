@@ -37,6 +37,21 @@ class AgentRuntimeLogicTest {
     }
 
     @Test
+    fun autoStepPolicyAsksOnlyOnceTheCapIsReached() {
+        assertFalse(AutoStepPolicy.shouldAskToContinue(autoStepsUsed = 0, cap = 12))
+        assertFalse(AutoStepPolicy.shouldAskToContinue(autoStepsUsed = 11, cap = 12))
+        assertTrue(AutoStepPolicy.shouldAskToContinue(autoStepsUsed = 12, cap = 12))
+        assertTrue(AutoStepPolicy.shouldAskToContinue(autoStepsUsed = 20, cap = 12))
+    }
+
+    @Test
+    fun autoStepPolicyHandlesInvalidInputs() {
+        assertTrue(AutoStepPolicy.shouldAskToContinue(autoStepsUsed = 0, cap = 0))
+        assertTrue(AutoStepPolicy.shouldAskToContinue(autoStepsUsed = 0, cap = -3))
+        assertFalse(AutoStepPolicy.shouldAskToContinue(autoStepsUsed = -5, cap = 12))
+    }
+
+    @Test
     fun confirmCardAvoidsBottomTargetsByPlacingAtTop() {
         assertTrue(OverlayGeometry.shouldPlaceConfirmCardAtTop(targetCenterY = 1800, screenHeight = 2400))
         assertFalse(OverlayGeometry.shouldPlaceConfirmCardAtTop(targetCenterY = 400, screenHeight = 2400))
