@@ -11,10 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_engine import (  # noqa: E402
     AGENT_TOOLS,
+    SNAPSHOT_STUB_NOTE,
     SYSTEM_PROMPT,
     AgentEngine,
     ThinkTagStreamParser,
+    build_click_execution_args,
     check_confirmation_required,
+    describe_click,
     extract_thinking_and_content,
     summarize_tool_call,
 )
@@ -359,6 +362,175 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event_types[-1], "done")
         done_result = events[-1]["result"]
         self.assertEqual(done_result["reply"], "Music toggled.")
+
+
+class ScriptedClientHub(FakeClientHub):
+    """Fake hub that returns canned results per tool name."""
+
+    def __init__(self, responses: dict[str, dict[str, object]]) -> None:
+        super().__init__()
+        self.responses = responses
+
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, object],
+        client_id: str | None = None,
+        timeout_s: float = 30.0,
+    ) -> tuple[str, str, dict[str, object]]:
+        self.calls.append((tool_name, arguments))
+        return "pc01", "GamingPC", self.responses.get(tool_name, {"ok": True, "executed": tool_name})
+
+
+def tool_message(name: str, arguments_json: str, call_id: str = "call_x") -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": call_id, "function": {"name": name, "arguments": arguments_json}}],
+    }
+
+
+PREPARED_INBOX = {
+    "ok": True,
+    "resolved": {
+        "snapshot_id": "s3",
+        "element_id": "e4",
+        "display_text": "Inbox",
+        "window_title": "Outlook",
+        "x": 40,
+        "y": 220,
+    },
+    "preview_jpeg_b64": "QUJD",
+}
+
+
+class ClickPolicyTests(unittest.TestCase):
+    def test_every_click_tool_requires_confirmation(self) -> None:
+        for tool in ("click_screen_element", "type_into_element"):
+            needs, _desc = check_confirmation_required(tool, {"element_id": "e1", "text": "hi"})
+            self.assertTrue(needs, tool)
+
+    def test_taint_gates_typing_and_urls_only_when_tainted(self) -> None:
+        ahk_args = {"steps": [{"text": "hello"}]}
+        self.assertFalse(check_confirmation_required("execute_pc_ahk_sequence", ahk_args)[0])
+        self.assertTrue(check_confirmation_required("execute_pc_ahk_sequence", ahk_args, tainted=True)[0])
+        self.assertTrue(check_confirmation_required("open_pc_url", {"url": "x.com"}, tainted=True)[0])
+        self.assertFalse(check_confirmation_required("control_pc_media", {"action": "mute"}, tainted=True)[0])
+
+    def test_describe_click_matches_phone_wording(self) -> None:
+        text = describe_click(
+            "click_screen_element",
+            {"element_id": "e4"},
+            {"display_text": "Inbox", "window_title": "Outlook"},
+        )
+        self.assertEqual(text, 'Click on e4 ("Inbox") in Outlook?')
+        typed = describe_click("type_into_element", {"element_id": "e2", "text": "hi"}, {"display_text": "To"})
+        self.assertEqual(typed, 'Click on e2 ("To") and type "hi"?')
+
+    def test_execution_args_are_pinned_to_resolved_element(self) -> None:
+        args = build_click_execution_args(
+            {"target_text": "Inbox", "occurrence": 1, "button": "left"},
+            PREPARED_INBOX["resolved"],
+        )
+        self.assertEqual(args["element_id"], "e4")
+        self.assertEqual(args["snapshot_id"], "s3")
+        self.assertEqual(args["button"], "left")
+        self.assertNotIn("target_text", args)
+        self.assertNotIn("occurrence", args)
+
+
+class ClickLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_click_is_prepared_gated_and_executed_on_approved_element(self) -> None:
+        hub = ScriptedClientHub({"prepare_click": PREPARED_INBOX})
+        scripted = [
+            tool_message("click_screen_element", '{"target_text": "Inbox"}'),
+            {"role": "assistant", "content": "Opened your inbox."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        first = await engine.run_turn("Open my Outlook inbox")
+
+        self.assertEqual(first.status, "confirmation_required")
+        pending = first.pending_confirmation
+        self.assertEqual(pending["description"], 'Click on e4 ("Inbox") in Outlook?')
+        self.assertEqual(pending["preview_image_jpeg_b64"], "QUJD")
+        self.assertEqual([name for name, _ in hub.calls], ["prepare_click"])
+
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=pending["confirmation_id"],
+            approved=True,
+        )
+        self.assertEqual(resumed.status, "completed")
+        name, args = hub.calls[-1]
+        self.assertEqual(name, "click_screen_element")
+        self.assertEqual((args["element_id"], args["snapshot_id"]), ("e4", "s3"))
+        self.assertNotIn("target_text", args)
+
+    async def test_unresolved_click_returns_candidates_without_gate(self) -> None:
+        hub = ScriptedClientHub(
+            {"prepare_click": {"ok": False, "reason": "ambiguous", "candidates": ['e2 "Reply" (1,2 3x4)']}}
+        )
+        scripted = [
+            tool_message("click_screen_element", '{"target_text": "Reply"}'),
+            {"role": "assistant", "content": "There are two Reply buttons; which one?"},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        result = await engine.run_turn("Click reply")
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual([name for name, _ in hub.calls], ["prepare_click"])
+        self.assertEqual(result.tool_calls[0]["status"], "error")
+        session = engine._sessions[result.session_id]
+        tool_contents = [m["content"] for m in session.messages if m["role"] == "tool"]
+        self.assertIn("ambiguous", tool_contents[-1])
+
+    async def test_reading_the_screen_gates_later_typing(self) -> None:
+        hub = ScriptedClientHub({})
+        scripted = [
+            tool_message("inspect_pc_screen", '{"window_query": "Outlook"}', "call_1"),
+            tool_message("execute_pc_ahk_sequence", '{"steps": [{"text": "hello"}]}', "call_2"),
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        result = await engine.run_turn("Read my mail and reply hello")
+
+        self.assertEqual(result.status, "confirmation_required")
+        self.assertIn("Screen text was read", result.pending_confirmation["description"])
+        self.assertEqual([name for name, _ in hub.calls], ["inspect_pc_screen"])
+
+    async def test_older_snapshots_are_pruned_from_context(self) -> None:
+        hub = ScriptedClientHub(
+            {"inspect_pc_screen": {"ok": True, "snapshot_id": "s1", "elements": 'e1 "Inbox" (1,2 3x4)'}}
+        )
+        scripted = [
+            tool_message("inspect_pc_screen", "{}", "call_1"),
+            tool_message("inspect_pc_screen", "{}", "call_2"),
+            {"role": "assistant", "content": "Looked twice."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        result = await engine.run_turn("Look at my screen twice")
+
+        session = engine._sessions[result.session_id]
+        snapshots = [m["content"] for m in session.messages if m.get("name") == "inspect_pc_screen"]
+        self.assertEqual(len(snapshots), 2)
+        self.assertIn(SNAPSHOT_STUB_NOTE, snapshots[0])
+        self.assertNotIn("elements", snapshots[0])
+        self.assertIn("elements", snapshots[1])
+
+    async def test_stream_click_shows_locating_pill_then_confirmation(self) -> None:
+        hub = ScriptedClientHub({"prepare_click": PREPARED_INBOX})
+        engine = FakeAgentEngine(hub, [tool_message("click_screen_element", '{"element_id": "e4"}')])
+        events = [ev async for ev in engine.run_turn_stream("Click inbox")]
+
+        running = [
+            call
+            for ev in events
+            if ev["type"] == "tool_calls"
+            for call in ev["tool_calls"]
+            if call["status"] == "running"
+        ]
+        self.assertTrue(any(call["summary"].startswith("Locating") for call in running))
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual(events[-1]["result"]["status"], "confirmation_required")
 
 
 if __name__ == "__main__":

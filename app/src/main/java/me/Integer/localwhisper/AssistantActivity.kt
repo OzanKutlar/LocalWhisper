@@ -5,10 +5,13 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -16,6 +19,7 @@ import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.annotation.DrawableRes
@@ -800,12 +804,55 @@ class AssistantActivity : AppCompatActivity() {
         val pending = response.pendingConfirmation
         if (pending != null) {
             binding.confirmationDescriptionText.text = pending.description
+            bindConfirmationPreview(pending)
             binding.confirmationGateCard.visibility = View.VISIBLE
         } else {
+            binding.confirmationPreviewImage.setImageDrawable(null)
             binding.confirmationGateCard.visibility = View.GONE
         }
 
         setUiState(UiState.AGENT_RESULT)
+    }
+
+    /** Shows the PC screenshot with the click target outlined, when the server sent one. */
+    private fun bindConfirmationPreview(pending: PendingConfirmationInfo) {
+        val imageView = binding.confirmationPreviewImage
+        val bitmap = decodePreviewImage(pending.previewImageB64)
+        imageView.setImageBitmap(bitmap)
+        imageView.visibility = visibleIf(bitmap != null)
+        if (bitmap == null) {
+            imageView.setOnClickListener(null)
+        } else {
+            imageView.setOnClickListener {
+                performTapHaptic(it)
+                showPreviewFullScreen(bitmap)
+            }
+        }
+    }
+
+    private fun decodePreviewImage(base64: String): Bitmap? {
+        if (base64.isBlank() || base64.length > MAX_PREVIEW_BASE64_CHARS) return null
+        return try {
+            val bytes = Base64.decode(base64, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } catch (exc: IllegalArgumentException) {
+            Log.w(TAG, "Confirmation preview image is not valid base64", exc)
+            null
+        }
+    }
+
+    private fun showPreviewFullScreen(bitmap: Bitmap) {
+        val imageView = ImageView(this).apply {
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setImageBitmap(bitmap)
+            contentDescription = getString(R.string.assistant_confirm_preview_desc)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.assistant_confirm_preview_title)
+            .setView(imageView)
+            .setPositiveButton(R.string.assistant_close_desc, null)
+            .show()
     }
 
     private fun renderChatHistoryThread(session: SavedAgentSession) {
@@ -1418,7 +1465,8 @@ class AssistantActivity : AppCompatActivity() {
         private const val DISABLED_ALPHA = 0.4f
         private const val RECORDING_FILE_NAME = "localwhisper_recording.wav"
         private const val LOCAL_TARGET_ID = "local-phone"
-        private const val MAX_AGENT_SCROLL_HEIGHT_DP = 280
+        private const val MAX_AGENT_SCROLL_HEIGHT_DP = 360
+        private const val MAX_PREVIEW_BASE64_CHARS = 600_000
         private val AHK_QUICK_TOKENS = listOf(
             "{Enter}",
             "{Tab}",

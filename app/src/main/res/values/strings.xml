@@ -110,6 +110,8 @@
     <string name="assistant_confirm_title">Approval required for PC action</string>
     <string name="assistant_confirm_approve">Approve</string>
     <string name="assistant_confirm_reject">Reject</string>
+    <string name="assistant_confirm_preview_title">What will be clicked</string>
+    <string name="assistant_confirm_preview_desc">Screenshot of the PC window with the click target outlined. Tap to enlarge.</string>
     <string name="assistant_follow_up_voice_desc">Ask a voice follow-up</string>
     <string name="assistant_follow_up_keyboard_desc">Type a follow-up</string>
     <string name="assistant_session_new">New session (tap to switch)</string>

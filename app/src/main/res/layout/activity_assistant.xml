@@ -297,6 +297,18 @@
                                 android:textColor="@color/lw_text_primary"
                                 android:textSize="14sp" />
 
+                            <ImageView
+                                android:id="@+id/confirmationPreviewImage"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="8dp"
+                                android:adjustViewBounds="true"
+                                android:background="@drawable/bg_info_panel"
+                                android:contentDescription="@string/assistant_confirm_preview_desc"
+                                android:maxHeight="200dp"
+                                android:scaleType="fitCenter"
+                                android:visibility="gone" />
+
                             <LinearLayout
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"

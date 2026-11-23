@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 import websockets
 
 from ahk_payload import build_send_units, plan_typing_delay_ms
-from pc_tools import dispatch_pc_tool
+from pc_tools import dispatch_pc_tool, enable_dpi_awareness
 
 logging.basicConfig(
     level=logging.INFO,
@@ -253,6 +253,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    # Window rects, OCR boxes and AHK clicks must all use physical pixels.
+    LOGGER.info("DPI awareness: %s", enable_dpi_awareness())
     try:
         ahk_exe = find_autohotkey_v1(args.ahk_path)
     except FileNotFoundError as exc:

@@ -60,7 +60,9 @@ data class AndroidClientAction(
 data class PendingConfirmationInfo(
     val confirmationId: String,
     val toolName: String,
-    val description: String
+    val description: String,
+    /** JPEG of the PC window with the click target outlined; empty when not available. */
+    val previewImageB64: String = ""
 )
 
 data class AgentResponse(
@@ -537,7 +539,8 @@ class LocalWhisperApi {
                 PendingConfirmationInfo(
                     confirmationId = confId,
                     toolName = pendingObj.optString("tool_name", ""),
-                    description = pendingObj.optString("description", "")
+                    description = pendingObj.optString("description", ""),
+                    previewImageB64 = pendingObj.optString("preview_image_jpeg_b64", "")
                 )
             } else null
         } else null
