@@ -38,7 +38,9 @@ data class AgentRuntimeState(
     val stepSummary: String = "",
     val isConfirmationResume: Boolean = false,
     val isPhoneFocused: Boolean = false,
-    val activityVisible: Boolean = false
+    val activityVisible: Boolean = false,
+    /** Client id the current turn ran with; "local-phone" for phone turns, null before any turn. */
+    val targetClientId: String? = null
 ) {
     val isRunningOrWaiting: Boolean
         get() = phase == AgentRuntimePhase.THINKING ||
@@ -132,7 +134,8 @@ object AgentRuntimeManager {
             AgentRuntimeState(
                 phase = AgentRuntimePhase.IDLE,
                 sessionId = current.sessionId,
-                activityVisible = current.activityVisible
+                activityVisible = current.activityVisible,
+                targetClientId = current.targetClientId
             )
         }
     }
@@ -145,10 +148,22 @@ object AgentRuntimeManager {
                 AgentRuntimeState(
                     phase = AgentRuntimePhase.IDLE,
                     sessionId = current.sessionId,
-                    activityVisible = current.activityVisible
+                    activityVisible = current.activityVisible,
+                    targetClientId = current.targetClientId
                 )
             }
         }
+    }
+
+    /**
+     * PC client id for follow-up requests (approvals, interjections). Prefers the id the turn
+     * actually ran with, because PC client ids change on every reconnect and the saved
+     * preference can point at a connection that no longer exists.
+     */
+    private fun resolveTargetClientId(ctx: Context, current: AgentRuntimeState): String? {
+        val remembered = current.targetClientId
+            ?: ServerPreferences(ctx).selectedClientId.takeIf { it.isNotBlank() }
+        return remembered?.takeIf { it != LOCAL_TARGET_ID }
     }
 
     /** Interrupts the current in-flight agent work and steers the session with a user correction. */
@@ -158,10 +173,7 @@ object AgentRuntimeManager {
         init(context)
         val ctx = context.applicationContext
         val current = _state.value
-        val prefs = ServerPreferences(ctx)
-        val targetClientId = prefs.selectedClientId.takeIf {
-            it.isNotBlank() && it != LOCAL_TARGET_ID
-        }
+        val targetClientId = resolveTargetClientId(ctx, current)
         startTurn(
             context = ctx,
             prompt = clean,
@@ -218,7 +230,8 @@ object AgentRuntimeManager {
                     else -> "Thinking…"
                 },
                 isConfirmationResume = false,
-                isPhoneFocused = isPhoneTarget
+                isPhoneFocused = isPhoneTarget,
+                targetClientId = clientId ?: LOCAL_TARGET_ID
             )
         }
 
@@ -288,9 +301,7 @@ object AgentRuntimeManager {
             )
             return
         }
-        val targetClientId = prefs.selectedClientId.takeIf {
-            it.isNotBlank() && it != LOCAL_TARGET_ID
-        }
+        val targetClientId = resolveTargetClientId(ctx, current)
 
         val sessionStore = AgentSessionStore(ctx)
         val resumeTimeline = current.timeline.ifEmpty {

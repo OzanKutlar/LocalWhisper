@@ -907,5 +907,45 @@ class MultimodalImageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("User interjection", last_prompt_msgs[-1]["content"])
 
 
+class ClientRecordingHub(ScriptedClientHub):
+    """Scripted hub that also records which client id each tool call asked for."""
+
+    def __init__(self, responses: dict[str, dict[str, object]]) -> None:
+        super().__init__(responses)
+        self.client_ids: list[str | None] = []
+
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, object],
+        client_id: str | None = None,
+        timeout_s: float = 30.0,
+    ) -> tuple[str, str, dict[str, object]]:
+        self.client_ids.append(client_id)
+        return await super().call_tool(tool_name, arguments, client_id, timeout_s)
+
+
+class ConfirmationClientPinningTests(unittest.IsolatedAsyncioTestCase):
+    async def test_approved_click_runs_on_preparing_client_despite_stale_request_id(self) -> None:
+        hub = ClientRecordingHub({"prepare_click": PREPARED_INBOX})
+        scripted = [
+            tool_message("click_screen_element", '{"element_id": "e4"}'),
+            {"role": "assistant", "content": "Opened your inbox."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        first = await engine.run_turn("Open my inbox")
+        self.assertEqual(first.status, "confirmation_required")
+
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=first.pending_confirmation["confirmation_id"],
+            approved=True,
+            client_id="dead",
+        )
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual([name for name, _ in hub.calls], ["prepare_click", "click_screen_element"])
+        self.assertEqual(hub.client_ids[-1], "pc01")
+
+
 if __name__ == "__main__":
     unittest.main()

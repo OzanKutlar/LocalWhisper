@@ -1281,15 +1281,27 @@ class AssistantActivity : AppCompatActivity() {
         renderBottomSections(currentState)
     }
 
-    /** Saved target if available, else the newest PC, else this phone. */
+    /**
+     * Saved target if available, else the newest PC, else this phone. PC client ids change on
+     * every reconnect, so a PC fallback is saved; a phone fallback keeps the saved PC choice.
+     */
     private fun selectPreferredClient() {
         val savedId = prefs.selectedClientId
-        selectedClient = if (savedId == LOCAL_TARGET_ID) {
-            localTarget
+        if (savedId == LOCAL_TARGET_ID) {
+            selectedClient = localTarget
+            return
+        }
+        val savedClient = connectedClients.firstOrNull { it.id == savedId }
+        if (savedClient != null) {
+            selectedClient = savedClient
+            return
+        }
+        val newestPc = connectedClients.lastOrNull()
+        if (newestPc != null) {
+            prefs.selectedClientId = newestPc.id
+            selectedClient = newestPc
         } else {
-            connectedClients.firstOrNull { it.id == savedId }
-                ?: connectedClients.lastOrNull()
-                ?: localTarget
+            selectedClient = localTarget
         }
     }
 

@@ -777,6 +777,8 @@ class PreparedCall:
     phone_action: dict[str, Any] | None = None
     auto_execute: bool = False
     early_output: dict[str, Any] | None = None
+    # PC client that prepared the call (owns its snapshot); approvals are pinned to it.
+    client_id: str | None = None
 
 
 @dataclass
@@ -1296,7 +1298,7 @@ class AgentEngine:
             session.phone_screen = phone_screen
         session.pending_confirmation = None
         self._begin_confirmation_resume(session)
-        effective_client_id = client_id or pending.client_id
+        effective_client_id = await self._resolve_confirm_client(pending, client_id)
 
         if approved:
             tool_output = await self._execute_confirmed_tool(
@@ -1363,7 +1365,7 @@ class AgentEngine:
             session.phone_screen = phone_screen
         session.pending_confirmation = None
         self._begin_confirmation_resume(session)
-        effective_client_id = client_id or pending.client_id
+        effective_client_id = await self._resolve_confirm_client(pending, client_id)
         yield {"type": "session", "session_id": session.session_id}
 
         if approved:
@@ -1413,6 +1415,36 @@ class AgentEngine:
 
         async for event in self._continue_agent_loop_stream(session, effective_client_id):
             yield event
+
+    async def _resolve_confirm_client(
+        self,
+        pending: PendingConfirmation,
+        request_client_id: str | None,
+    ) -> str | None:
+        """Chooses the PC client an approved action runs on.
+
+        Clicks and typing always use the pinned client, because their element and snapshot
+        ids only exist in that client's snapshot cache. Other gated tools use the pinned client
+        while it is connected, otherwise the client named in the request.
+        """
+        pinned = (pending.client_id or "").strip() or None
+        if pinned is None:
+            return request_client_id
+        if request_client_id and request_client_id != pinned:
+            LOGGER.info(
+                "Confirmation for '%s' requested client %s; pinned client is %s",
+                pending.tool_name,
+                request_client_id,
+                pinned,
+            )
+        if pending.tool_name in PC_CLICK_TOOLS:
+            return pinned
+        try:
+            connected = {str(c.get("id", "")) for c in await self.client_hub.list_clients()}
+        except Exception as exc:  # noqa: BLE001 - fall back to the pinned client on hub errors
+            LOGGER.warning("Could not list PC clients while resolving confirmation: %s", exc)
+            return pinned
+        return pinned if pinned in connected else (request_client_id or pinned)
 
     def _prepare_session_for_turn(
         self,
@@ -1854,7 +1886,7 @@ class AgentEngine:
     ) -> PreparedCall:
         summary = summarize_tool_call(tool_name, arguments)
         try:
-            _cid, cname, result = await self.client_hub.call_tool(
+            resolved_client_id, cname, result = await self.client_hub.call_tool(
                 tool_name="prepare_click",
                 arguments=arguments,
                 client_id=client_id,
@@ -1887,6 +1919,7 @@ class AgentEngine:
             needs_confirmation=True,
             description=describe_click(tool_name, arguments, resolved),
             preview_image_b64=str(result.get("preview_jpeg_b64") or ""),
+            client_id=str(resolved_client_id or "").strip() or None,
         )
 
     @staticmethod
@@ -1905,7 +1938,7 @@ class AgentEngine:
             arguments=prepared.arguments,
             description=prepared.description,
             remaining_tool_calls=remaining_tool_calls,
-            client_id=client_id,
+            client_id=prepared.client_id or client_id,
             preview_image_b64=prepared.preview_image_b64,
             phone_action=prepared.phone_action,
             auto_execute=prepared.auto_execute,
