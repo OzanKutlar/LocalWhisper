@@ -141,13 +141,37 @@ object AgentRuntimeManager {
         }
     }
 
+    /** Interrupts the current in-flight agent work and steers the session with a user correction. */
+    fun interject(context: Context, instruction: String, waitForActivityHide: Boolean = false) {
+        val clean = instruction.trim()
+        if (clean.isEmpty()) return
+        init(context)
+        val ctx = context.applicationContext
+        val current = _state.value
+        val prefs = ServerPreferences(ctx)
+        val targetClientId = prefs.selectedClientId.takeIf {
+            it.isNotBlank() && it != LOCAL_TARGET_ID
+        }
+        val isPhoneTarget = current.isPhoneFocused || targetClientId == null
+        startTurn(
+            context = ctx,
+            prompt = clean,
+            clientId = if (isPhoneTarget) null else targetClientId,
+            sessionId = current.sessionId,
+            isPhoneTarget = isPhoneTarget,
+            waitForActivityHide = waitForActivityHide,
+            interjection = true
+        )
+    }
+
     fun startTurn(
         context: Context,
         prompt: String,
         clientId: String?,
         sessionId: String?,
         isPhoneTarget: Boolean,
-        waitForActivityHide: Boolean
+        waitForActivityHide: Boolean,
+        interjection: Boolean = false
     ) {
         init(context)
         val ctx = context.applicationContext
@@ -179,7 +203,7 @@ object AgentRuntimeManager {
                 reply = "",
                 pendingConfirmation = null,
                 errorMessage = null,
-                stepSummary = if (isPhoneTarget) "Reading screen…" else "Thinking…",
+                stepSummary = if (interjection) "Redirecting…" else if (isPhoneTarget) "Reading screen…" else "Thinking…",
                 isConfirmationResume = false,
                 isPhoneFocused = isPhoneTarget
             )
@@ -206,6 +230,7 @@ object AgentRuntimeManager {
                     sessionId = sessionId,
                     priorTurns = existingTurns,
                     phoneScreen = phoneScreenSnapshot,
+                    interjection = interjection,
                     onProgress = { progress -> applyStreamProgress(progress) }
                 )
                 result.onSuccess { response ->
@@ -227,7 +252,7 @@ object AgentRuntimeManager {
         }
     }
 
-    fun submitConfirmation(approved: Boolean) {
+    fun submitConfirmation(approved: Boolean, rejectionReason: String? = null) {
         val ctx = appContext ?: return
         val current = _state.value
         val sessionId = current.sessionId ?: return
@@ -279,6 +304,7 @@ object AgentRuntimeManager {
                     initialTimeline = resumeTimeline,
                     phoneScreen = updatedPhoneScreen,
                     phoneActionResult = phoneActionResult,
+                    rejectionReason = if (!approved) rejectionReason else null,
                     onProgress = { progress -> applyStreamProgress(progress) }
                 )
                 result.onSuccess { response ->

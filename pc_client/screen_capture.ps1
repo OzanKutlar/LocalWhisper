@@ -162,15 +162,15 @@ function Add-TargetMarker($bitmap, $region) {
     $g = [System.Drawing.Graphics]::FromImage($bitmap)
     try {
         $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-        $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 242, 61, 92), 6)
+        $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 242, 61, 92), 3)
         try {
             if ($BoxW -gt 0 -and $BoxH -gt 0) {
-                $g.DrawRectangle($pen, ($BoxX - $region.x - 5), ($BoxY - $region.y - 5), ($BoxW + 10), ($BoxH + 10))
+                $g.DrawRectangle($pen, ($BoxX - $region.x - 3), ($BoxY - $region.y - 3), ($BoxW + 6), ($BoxH + 6))
             }
             if ($PointX -gt -100000 -and $PointY -gt -100000) {
                 $px = $PointX - $region.x
                 $py = $PointY - $region.y
-                $g.DrawEllipse($pen, ($px - 12), ($py - 12), 24, 24)
+                $g.DrawEllipse($pen, ($px - 10), ($py - 10), 20, 20)
             }
         } finally { $pen.Dispose() }
     } finally { $g.Dispose() }
@@ -205,7 +205,7 @@ function Invoke-PreviewMode($region) {
     $capture = New-Capture $region
     try {
         Add-TargetMarker $capture $region
-        return Save-ResizedJpeg $capture $OutPath $MaxWidth 70
+        return Save-ResizedJpeg $capture $OutPath $MaxWidth 84
     } finally { $capture.Dispose() }
 }
 

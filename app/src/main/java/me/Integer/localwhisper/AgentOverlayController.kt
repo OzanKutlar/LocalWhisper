@@ -261,6 +261,13 @@ class AgentOverlayController(private val service: AccessibilityService) {
         ) {
             AgentRuntimeManager.togglePause()
         }
+        val interjectButton = buildQuickActionChip(
+            R.string.overlay_action_interject,
+            R.color.lw_accent
+        ) {
+            AgentRuntimeManager.pause()
+            openAssistantActivity(focusInterject = true)
+        }
         val openButton = buildQuickActionChip(
             R.string.overlay_action_open,
             R.color.lw_text_primary
@@ -275,6 +282,7 @@ class AgentOverlayController(private val service: AccessibilityService) {
         }
 
         actionsRow.addView(resumeButton)
+        actionsRow.addView(interjectButton)
         actionsRow.addView(openButton)
         actionsRow.addView(stopButton)
 
@@ -529,7 +537,7 @@ class AgentOverlayController(private val service: AccessibilityService) {
         val previewImage = ImageView(themedContext).apply {
             adjustViewBounds = true
             scaleType = ImageView.ScaleType.FIT_CENTER
-            maxHeight = dp(160)
+            maxHeight = dp(220)
             visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -541,12 +549,24 @@ class AgentOverlayController(private val service: AccessibilityService) {
 
         val buttonsRow = LinearLayout(themedContext).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 topMargin = dp(12)
+            }
+        }
+
+        val reasonButton = TextView(themedContext).apply {
+            setText(R.string.overlay_action_reject_reason)
+            textSize = 13f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(color(R.color.lw_text_secondary))
+            setPadding(dp(8), dp(8), dp(12), dp(8))
+            setOnClickListener { v ->
+                v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                openAssistantActivity(focusRejectionReason = true)
             }
         }
 
@@ -573,6 +593,7 @@ class AgentOverlayController(private val service: AccessibilityService) {
             }
         }
 
+        buttonsRow.addView(reasonButton)
         buttonsRow.addView(rejectButton)
         buttonsRow.addView(approveButton)
 
@@ -699,10 +720,19 @@ class AgentOverlayController(private val service: AccessibilityService) {
         )
     }
 
-    private fun openAssistantActivity() {
+    private fun openAssistantActivity(
+        focusInterject: Boolean = false,
+        focusRejectionReason: Boolean = false
+    ) {
         val intent = Intent(service, AssistantActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             putExtra(AssistantActivity.EXTRA_ATTACH_ACTIVE_AGENT, true)
+            if (focusInterject) {
+                putExtra(AssistantActivity.EXTRA_FOCUS_INTERJECT, true)
+            }
+            if (focusRejectionReason) {
+                putExtra(AssistantActivity.EXTRA_FOCUS_REJECTION_REASON, true)
+            }
         }
         try {
             service.startActivity(intent)

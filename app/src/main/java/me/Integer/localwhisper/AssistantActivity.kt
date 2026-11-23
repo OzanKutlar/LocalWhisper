@@ -18,6 +18,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
+import android.view.inputmethod.EditorInfo
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -106,6 +107,7 @@ class AssistantActivity : AppCompatActivity() {
     private var liveTurnViews: LiveStreamingTurnViews? = null
     private var liveTurnKey: String? = null
     private var isAgentPaused = false
+    private var lastConfirmationId: String? = null
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
@@ -138,6 +140,7 @@ class AssistantActivity : AppCompatActivity() {
         isAgentMode = prefs.startInAgentMode
         observeAgentRuntime()
         beginAssistantFlow()
+        applyRequestedInputFocus(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -148,6 +151,7 @@ class AssistantActivity : AppCompatActivity() {
         if (runtimeState.phase != AgentRuntimePhase.IDLE) {
             attachToRuntimeState(runtimeState)
         }
+        applyRequestedInputFocus(intent)
     }
 
     override fun onStart() {
@@ -214,11 +218,33 @@ class AssistantActivity : AppCompatActivity() {
         }
         binding.approveConfirmButton.setOnClickListener {
             performTapHaptic(it)
+            binding.rejectionReasonInput.setText("")
+            hideKeyboard()
             submitAgentConfirmation(approved = true)
         }
         binding.rejectConfirmButton.setOnClickListener {
             performTapHaptic(it)
-            submitAgentConfirmation(approved = false)
+            val reason = binding.rejectionReasonInput.text?.toString()?.trim().orEmpty()
+            binding.rejectionReasonInput.setText("")
+            hideKeyboard()
+            submitAgentConfirmation(approved = false, rejectionReason = reason.ifEmpty { null })
+        }
+        binding.interjectInput.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus && AgentRuntimeManager.state.value.phase == AgentRuntimePhase.THINKING) {
+                AgentRuntimeManager.pause()
+            }
+        }
+        binding.interjectInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEND) {
+                submitInterjection()
+                true
+            } else {
+                false
+            }
+        }
+        binding.interjectSendButton.setOnClickListener {
+            performTapHaptic(it)
+            submitInterjection()
         }
     }
 
@@ -484,7 +510,10 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun showKeyboard() {
-        val input = binding.transcriptInput
+        showKeyboardFor(binding.transcriptInput)
+    }
+
+    private fun showKeyboardFor(input: android.widget.EditText) {
         input.requestFocus()
         input.setSelection(input.text?.length ?: 0)
         // Posted so the field is laid out and focused before the IME is requested.
@@ -494,9 +523,53 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun hideKeyboard() {
-        val input = binding.transcriptInput
-        input.clearFocus()
-        WindowCompat.getInsetsController(window, input).hide(WindowInsetsCompat.Type.ime())
+        val focused = currentFocus ?: binding.transcriptInput
+        focused.clearFocus()
+        WindowCompat.getInsetsController(window, focused).hide(WindowInsetsCompat.Type.ime())
+    }
+
+    private fun applyRequestedInputFocus(intent: Intent?) {
+        if (intent == null) return
+        when {
+            intent.getBooleanExtra(EXTRA_FOCUS_INTERJECT, false) -> {
+                intent.removeExtra(EXTRA_FOCUS_INTERJECT)
+                if (AgentRuntimeManager.state.value.phase == AgentRuntimePhase.THINKING) {
+                    AgentRuntimeManager.pause()
+                }
+                binding.interjectBar.post {
+                    if (binding.interjectBar.visibility == View.VISIBLE) {
+                        showKeyboardFor(binding.interjectInput)
+                    }
+                }
+            }
+            intent.getBooleanExtra(EXTRA_FOCUS_REJECTION_REASON, false) -> {
+                intent.removeExtra(EXTRA_FOCUS_REJECTION_REASON)
+                binding.rejectionReasonInput.post {
+                    if (binding.confirmationGateCard.visibility == View.VISIBLE) {
+                        showKeyboardFor(binding.rejectionReasonInput)
+                        binding.agentResultScroll.fullScroll(View.FOCUS_DOWN)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun submitInterjection() {
+        val text = binding.interjectInput.text?.toString()?.trim().orEmpty()
+        if (text.isEmpty()) return
+        binding.interjectInput.setText("")
+        hideKeyboard()
+        val runtimeState = AgentRuntimeManager.state.value
+        val shouldAutoMinimize = (runtimeState.isPhoneFocused || isLocalTargetSelected()) &&
+            LocalTypingService.isRunning()
+        AgentRuntimeManager.interject(
+            context = this,
+            instruction = text,
+            waitForActivityHide = shouldAutoMinimize
+        )
+        if (shouldAutoMinimize) {
+            minimizeToCornerPill(immediate = false)
+        }
     }
 
     private fun startRecording() {
@@ -605,10 +678,10 @@ class AssistantActivity : AppCompatActivity() {
         }
     }
 
-    private fun submitAgentConfirmation(approved: Boolean) {
+    private fun submitAgentConfirmation(approved: Boolean, rejectionReason: String? = null) {
         clearError()
         binding.confirmationGateCard.visibility = View.GONE
-        AgentRuntimeManager.submitConfirmation(approved = approved)
+        AgentRuntimeManager.submitConfirmation(approved = approved, rejectionReason = rejectionReason)
     }
 
     private fun renderFromRuntimeState(state: AgentRuntimeState) {
@@ -659,6 +732,10 @@ class AssistantActivity : AppCompatActivity() {
                 }
                 val pending = state.pendingConfirmation
                 if (pending != null) {
+                    if (lastConfirmationId != pending.confirmationId) {
+                        lastConfirmationId = pending.confirmationId
+                        binding.rejectionReasonInput.setText("")
+                    }
                     binding.confirmationTitleText.setText(
                         if (pending.phoneAction != null) {
                             R.string.assistant_confirm_phone_title
@@ -670,6 +747,7 @@ class AssistantActivity : AppCompatActivity() {
                     bindConfirmationPreview(pending)
                     binding.confirmationGateCard.visibility = View.VISIBLE
                 } else {
+                    lastConfirmationId = null
                     binding.confirmationPreviewImage.setImageDrawable(null)
                     binding.confirmationGateCard.visibility = View.GONE
                 }
@@ -1299,6 +1377,7 @@ class AssistantActivity : AppCompatActivity() {
 
     private fun renderBottomSections(state: UiState) {
         binding.progressSection.visibility = visibleIf(state == UiState.RECORDING)
+        binding.interjectBar.visibility = visibleIf(state == UiState.AGENT_THINKING)
         // AHK key tokens only mean something in raw PC dictation mode.
         binding.chipScroll.visibility = visibleIf(
             (state == UiState.REVIEW || state == UiState.SENDING) &&
@@ -1530,6 +1609,8 @@ class AssistantActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_ATTACH_ACTIVE_AGENT = "attach_active_agent"
+        const val EXTRA_FOCUS_INTERJECT = "focus_interject"
+        const val EXTRA_FOCUS_REJECTION_REASON = "focus_rejection_reason"
         private const val TAG = "LW-Assistant"
         private const val TIMER_TICK_MS = 250L
         private const val SENT_DISMISS_DELAY_MS = 650L

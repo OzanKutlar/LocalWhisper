@@ -25,6 +25,12 @@ MAX_CANDIDATES = 5
 MAX_ELEMENT_TEXT = 120
 MAX_CLICK_OFFSET_PX = 400
 MAX_ELEMENT_WORDS_SCANNED = 40
+PREVIEW_MIN_W = 420
+PREVIEW_MAX_W = 680
+PREVIEW_MIN_H = 260
+PREVIEW_MAX_H = 420
+PREVIEW_BOX_SCALE_X = 3.2
+PREVIEW_BOX_SCALE_Y = 4.5
 
 
 @dataclass(frozen=True)
@@ -284,3 +290,57 @@ def clamp_offset(value: Any) -> int:
 def click_point(element: ScreenElement, offset_x: Any = 0, offset_y: Any = 0) -> tuple[int, int]:
     center_x, center_y = element.center()
     return center_x + clamp_offset(offset_x), center_y + clamp_offset(offset_y)
+
+
+def compute_zoomed_preview_region(
+    target_x: int,
+    target_y: int,
+    box: dict[str, Any] | None = None,
+    window_rect: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Computes a tight zoomed-in crop centered around the click target.
+
+    Clamps inside window_rect when the target belongs to that window so previews stay
+    legible on large/maximized screens without capturing empty space outside the window.
+    """
+    box_w = 0
+    box_h = 0
+    center_x = int(target_x)
+    center_y = int(target_y)
+    if isinstance(box, dict):
+        try:
+            bx = int(box.get("x", 0))
+            by = int(box.get("y", 0))
+            bw = int(box.get("w", 0))
+            bh = int(box.get("h", 0))
+            if bw > 0 and bh > 0:
+                box_w = bw
+                box_h = bh
+                center_x = (center_x + (bx + bw // 2)) // 2
+                center_y = (center_y + (by + bh // 2)) // 2
+        except (TypeError, ValueError):
+            pass
+
+    desired_w = int(max(box_w * PREVIEW_BOX_SCALE_X, PREVIEW_MIN_W))
+    desired_h = int(max(box_h * PREVIEW_BOX_SCALE_Y, PREVIEW_MIN_H))
+    crop_w = max(PREVIEW_MIN_W, min(desired_w, PREVIEW_MAX_W))
+    crop_h = max(PREVIEW_MIN_H, min(desired_h, PREVIEW_MAX_H))
+
+    if isinstance(window_rect, dict):
+        wx = int(window_rect.get("x", 0))
+        wy = int(window_rect.get("y", 0))
+        ww = int(window_rect.get("width", 0))
+        wh = int(window_rect.get("height", 0))
+        if ww > 40 and wh > 40 and wx <= target_x < wx + ww and wy <= target_y < wy + wh:
+            final_w = min(crop_w, ww)
+            final_h = min(crop_h, wh)
+            crop_x = max(wx, min(center_x - final_w // 2, wx + ww - final_w))
+            crop_y = max(wy, min(center_y - final_h // 2, wy + wh - final_h))
+            return {"X": crop_x, "Y": crop_y, "W": final_w, "H": final_h}
+
+    return {
+        "X": center_x - crop_w // 2,
+        "Y": center_y - crop_h // 2,
+        "W": crop_w,
+        "H": crop_h,
+    }

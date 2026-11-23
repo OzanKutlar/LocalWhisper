@@ -23,6 +23,7 @@ from screen_elements import (
     build_elements,
     clamp_offset,
     click_point,
+    compute_zoomed_preview_region,
     parse_ocr_lines,
     resolve_text_target,
     staleness_reason,
@@ -387,9 +388,10 @@ def run_list_pc_windows(arguments: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------- Screen inspection (OCR snapshots)
 
 def run_inspect_pc_screen(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Inspects the PC screen and returns an OCR snapshot whose elements can be clicked by id."""
+    """Inspects the PC screen and returns BOTH a visual JPEG screenshot and an OCR snapshot."""
     window_query = str(arguments.get("window_query", "")).strip()
     include_ocr = bool(arguments.get("include_ocr", True))
+    max_width = _clamp_image_max_width(arguments.get("max_width"))
 
     all_windows, _fg_hex = _enumerate_win32_windows()
     visible_windows = [w for w in all_windows if w.get("state") != "minimized"]
@@ -404,17 +406,41 @@ def run_inspect_pc_screen(arguments: dict[str, Any]) -> dict[str, Any]:
         "visible_windows": [_brief_window(w) for w in visible_windows[:MAX_VISIBLE_WINDOWS_LISTED]],
         "ui_controls": _extract_window_child_texts(target_hwnd) if target_hwnd else [],
     }
-    if not include_ocr:
-        result["ocr_status"] = "skipped"
-        return result
     if target and target.get("state") == "minimized":
         result["ocr_status"] = "target_minimized: focus the window with manage_pc_app first"
+        result["screenshot_status"] = "target_minimized"
         return result
 
-    snapshot, status = _take_snapshot(target, full_screen=not window_query)
-    result["ocr_status"] = status
-    if snapshot is not None:
-        result.update(_snapshot_payload(snapshot, MAX_ELEMENTS))
+    use_window_bounds = bool(window_query and query_matched and target is not None)
+    bounds = target.get("bounds") if use_window_bounds and target is not None else None
+    if include_ocr:
+        snapshot, status = _take_snapshot(target, full_screen=not use_window_bounds)
+        result["ocr_status"] = status
+        if snapshot is not None:
+            result.update(_snapshot_payload(snapshot, MAX_ELEMENTS))
+    else:
+        result["ocr_status"] = "skipped"
+
+    b64, width, height, shot_status = _capture_encoded_jpeg(
+        "screenshot",
+        _screenshot_region(bounds),
+        max_width,
+    )
+    result["screenshot_status"] = shot_status
+    if shot_status == "ok" and b64:
+        title = str(target.get("title", "")) if target else ""
+        label = title or "(untitled)"
+        if not use_window_bounds:
+            label = f"Primary screen (foreground: {label})"
+        result.update(
+            {
+                "image_jpeg_b64": b64,
+                "mime_type": "image/jpeg",
+                "width": width,
+                "height": height,
+                "window_title": label,
+            }
+        )
     return result
 
 
@@ -577,7 +603,7 @@ def run_capture_pc_screenshot(arguments: dict[str, Any]) -> dict[str, Any]:
     label = title or "(untitled)"
     if not use_window_bounds:
         label = f"Primary screen (foreground: {label})"
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "image_jpeg_b64": b64,
         "mime_type": "image/jpeg",
@@ -586,6 +612,11 @@ def run_capture_pc_screenshot(arguments: dict[str, Any]) -> dict[str, Any]:
         "window_title": label,
         "window_query_matched": query_matched,
     }
+    snapshot, ocr_status = _take_snapshot(target, full_screen=not use_window_bounds)
+    result["ocr_status"] = ocr_status
+    if snapshot is not None:
+        result.update(_snapshot_payload(snapshot, MAX_ELEMENTS))
+    return result
 
 
 def validate_image_file_path(raw_path: str) -> Path:
@@ -834,19 +865,12 @@ def _capture_click_preview(target: dict[str, Any]) -> tuple[str, str]:
 def _preview_region(target: dict[str, Any]) -> dict[str, int]:
     x, y = int(target["x"]), int(target["y"])
     rect = _get_window_rect(int(target.get("hwnd") or 0))
-    if rect and rect["width"] > MIN_CAPTURE_PX and rect["height"] > MIN_CAPTURE_PX and _rect_contains(rect, x, y):
-        return {
-            "X": rect["x"],
-            "Y": rect["y"],
-            "W": min(rect["width"], MAX_CAPTURE_W),
-            "H": min(rect["height"], MAX_CAPTURE_H),
-        }
-    return {
-        "X": x - PREVIEW_FALLBACK_W // 2,
-        "Y": y - PREVIEW_FALLBACK_H // 2,
-        "W": PREVIEW_FALLBACK_W,
-        "H": PREVIEW_FALLBACK_H,
-    }
+    return compute_zoomed_preview_region(
+        target_x=x,
+        target_y=y,
+        box=target.get("box") if isinstance(target.get("box"), dict) else None,
+        window_rect=rect,
+    )
 
 
 def _preview_box(target: dict[str, Any]) -> dict[str, int]:

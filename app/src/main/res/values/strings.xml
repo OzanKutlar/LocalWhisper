@@ -113,6 +113,9 @@
     <string name="assistant_confirm_phone_title">Approval required for phone action</string>
     <string name="assistant_confirm_approve">Approve</string>
     <string name="assistant_confirm_reject">Reject</string>
+    <string name="assistant_confirm_reject_reason_hint">Optional reason for rejecting…</string>
+    <string name="assistant_interject_hint">Interject or correct the agent…</string>
+    <string name="assistant_interject_send_desc">Send interjection</string>
     <string name="assistant_confirm_preview_title">What will be clicked</string>
     <string name="assistant_confirm_preview_desc">Screenshot of the PC window with the click target outlined. Tap to enlarge.</string>
     <string name="assistant_follow_up_voice_desc">Ask a voice follow-up</string>
@@ -127,6 +130,8 @@
     <string name="overlay_pill_done">Done · tap to view</string>
     <string name="overlay_pill_error">Error · tap to view</string>
     <string name="overlay_action_resume">Resume</string>
+    <string name="overlay_action_interject">Interject</string>
+    <string name="overlay_action_reject_reason">Reason…</string>
     <string name="overlay_action_open">Open</string>
     <string name="overlay_action_stop">Stop</string>
     <string name="overlay_action_dismiss">Dismiss</string>

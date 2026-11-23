@@ -249,7 +249,8 @@ class LocalWhisperApi {
         clientId: String?,
         sessionId: String?,
         priorTurns: List<AgentChatTurn> = emptyList(),
-        phoneScreen: JSONObject? = null
+        phoneScreen: JSONObject? = null,
+        interjection: Boolean = false
     ): Result<AgentResponse> = withContext(Dispatchers.IO) {
         if (prompt.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("Prompt must not be empty"))
@@ -261,6 +262,9 @@ class LocalWhisperApi {
             }
             if (!sessionId.isNullOrBlank()) {
                 put("session_id", sessionId)
+            }
+            if (interjection) {
+                put("interjection", true)
             }
             if (priorTurns.isNotEmpty()) {
                 val historyArray = JSONArray()
@@ -302,7 +306,8 @@ class LocalWhisperApi {
         approved: Boolean,
         clientId: String?,
         phoneScreen: JSONObject? = null,
-        phoneActionResult: JSONObject? = null
+        phoneActionResult: JSONObject? = null,
+        rejectionReason: String? = null
     ): Result<AgentResponse> = withContext(Dispatchers.IO) {
         val payload = JSONObject().apply {
             put("session_id", sessionId)
@@ -316,6 +321,10 @@ class LocalWhisperApi {
             }
             if (phoneActionResult != null) {
                 put("phone_action_result", phoneActionResult)
+            }
+            val trimmedReason = rejectionReason?.trim().orEmpty()
+            if (!approved && trimmedReason.isNotEmpty()) {
+                put("rejection_reason", trimmedReason)
             }
         }
         val request = Request.Builder()
@@ -332,6 +341,7 @@ class LocalWhisperApi {
         sessionId: String?,
         priorTurns: List<AgentChatTurn> = emptyList(),
         phoneScreen: JSONObject? = null,
+        interjection: Boolean = false,
         onProgress: suspend (AgentStreamProgress) -> Unit
     ): Result<AgentResponse> = withContext(Dispatchers.IO) {
         if (prompt.isBlank()) {
@@ -344,6 +354,9 @@ class LocalWhisperApi {
             }
             if (!sessionId.isNullOrBlank()) {
                 put("session_id", sessionId)
+            }
+            if (interjection) {
+                put("interjection", true)
             }
             if (priorTurns.isNotEmpty()) {
                 val historyArray = JSONArray()
@@ -387,6 +400,7 @@ class LocalWhisperApi {
         initialTimeline: List<TimelineEntry> = emptyList(),
         phoneScreen: JSONObject? = null,
         phoneActionResult: JSONObject? = null,
+        rejectionReason: String? = null,
         onProgress: suspend (AgentStreamProgress) -> Unit
     ): Result<AgentResponse> = withContext(Dispatchers.IO) {
         val payload = JSONObject().apply {
@@ -401,6 +415,10 @@ class LocalWhisperApi {
             }
             if (phoneActionResult != null) {
                 put("phone_action_result", phoneActionResult)
+            }
+            val trimmedReason = rejectionReason?.trim().orEmpty()
+            if (!approved && trimmedReason.isNotEmpty()) {
+                put("rejection_reason", trimmedReason)
             }
         }
         val request = Request.Builder()

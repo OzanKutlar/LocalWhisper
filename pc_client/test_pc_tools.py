@@ -18,6 +18,7 @@ from pc_tools import (  # noqa: E402
     filter_windows_list,
     run_ahk_sequence,
     run_capture_pc_screenshot,
+    run_inspect_pc_screen,
     run_read_pc_image,
     validate_http_url,
     validate_image_file_path,
@@ -151,6 +152,8 @@ class ImageToolsTests(unittest.TestCase):
 
         def fake_script(mode: str, params: dict[str, object]):
             captured_params.append({"mode": mode, **params})
+            if mode == "ocr":
+                return {"ok": True, "lines": [{"text": "Dashboard", "x": 20, "y": 30, "w": 90, "h": 20}]}, "ok"
             Path(str(params["OutPath"])).write_bytes(b"\xff\xd8\xff\xe0FAKEJPEG")
             return {"ok": True, "width": 640, "height": 400}, "ok"
 
@@ -164,8 +167,42 @@ class ImageToolsTests(unittest.TestCase):
         self.assertEqual(result["mime_type"], "image/jpeg")
         self.assertEqual(result["width"], 640)
         self.assertEqual(base64.b64decode(result["image_jpeg_b64"]), b"\xff\xd8\xff\xe0FAKEJPEG")
+        self.assertEqual(result["ocr_status"], "ok")
+        self.assertIn("Dashboard", result["elements"])
         self.assertEqual(captured_params[0]["mode"], "screenshot")
         self.assertEqual(captured_params[0]["MaxWidth"], SCREENSHOT_MAX_WIDTH)
+        self.assertEqual(captured_params[1]["mode"], "ocr")
+
+    def test_run_inspect_pc_screen_returns_both_ocr_and_visual_jpeg(self) -> None:
+        fake_windows = [
+            {
+                "hwnd": "0x101",
+                "_hwnd_int": 257,
+                "process_name": "chrome.exe",
+                "title": "Inbox - Google Chrome",
+                "is_foreground": True,
+                "state": "normal",
+                "bounds": {"x": 10, "y": 20, "width": 1200, "height": 800},
+            }
+        ]
+
+        def fake_script(mode: str, params: dict[str, object]):
+            if mode == "ocr":
+                return {"ok": True, "lines": [{"text": "Compose", "x": 30, "y": 50, "w": 80, "h": 22}]}, "ok"
+            Path(str(params["OutPath"])).write_bytes(b"\xff\xd8\xff\xe0SCREEN")
+            return {"ok": True, "width": 960, "height": 640}, "ok"
+
+        with (
+            mock.patch("pc_tools._enumerate_win32_windows", return_value=(fake_windows, "0x101")),
+            mock.patch("pc_tools._run_screen_script", side_effect=fake_script),
+        ):
+            result = run_inspect_pc_screen({"window_query": "chrome"})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ocr_status"], "ok")
+        self.assertEqual(result["screenshot_status"], "ok")
+        self.assertIn("Compose", result["elements"])
+        self.assertEqual(base64.b64decode(result["image_jpeg_b64"]), b"\xff\xd8\xff\xe0SCREEN")
 
     def test_run_capture_pc_screenshot_rejects_minimized_target_window(self) -> None:
         fake_windows = [

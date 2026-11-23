@@ -302,9 +302,27 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
             "package_name": "com.whatsapp",
             "visible_texts": ["WhatsApp", "Hey, are we still meeting at 5?"],
         }
-        result = await engine.run_turn(
+        first = await engine.run_turn(
             prompt="What is on my phone and PC screen?",
             phone_screen=phone_snapshot,
+        )
+        self.assertEqual(first.status, "confirmation_required")
+        self.assertTrue(first.pending_confirmation["auto_execute"])
+        self.assertEqual(first.pending_confirmation["phone_action"]["action"], "capture_screen")
+
+        result = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=first.pending_confirmation["confirmation_id"],
+            approved=True,
+            phone_screen=phone_snapshot,
+            phone_action_result={
+                "ok": True,
+                "action": "capture_screen",
+                "image_jpeg_b64": "UEhPTkVKTUVH",
+                "mime_type": "image/jpeg",
+                "width": 900,
+                "height": 1900,
+            },
         )
         self.assertEqual(result.status, "completed")
         self.assertEqual(len(hub.calls), 2)
@@ -680,25 +698,27 @@ class MultimodalImageTests(unittest.IsolatedAsyncioTestCase):
             "ui_elements": [],
         }
 
-    def test_image_tools_require_confirmation_while_ocr_does_not(self) -> None:
-        for image_tool, args in (
-            ("capture_pc_screenshot", {"window_query": "Chrome"}),
-            ("capture_phone_screenshot", {}),
-            ("read_pc_image", {"path": "C:\\Users\\Ozan\\Desktop\\pic.png"}),
+    def test_screen_tools_do_not_require_confirmation_while_disk_image_read_does(self) -> None:
+        needs, desc = check_confirmation_required("read_pc_image", {"path": "C:\\Users\\Ozan\\Desktop\\pic.png"})
+        self.assertTrue(needs)
+        self.assertTrue(len(desc) > 10)
+
+        for screen_tool in (
+            "inspect_pc_screen",
+            "capture_pc_screenshot",
+            "inspect_phone_screen",
+            "capture_phone_screenshot",
         ):
-            needs, desc = check_confirmation_required(image_tool, args)
-            self.assertTrue(needs, image_tool)
-            self.assertTrue(len(desc) > 10)
+            needs, _desc = check_confirmation_required(screen_tool, {})
+            self.assertFalse(needs, screen_tool)
 
-        for ocr_tool in ("inspect_pc_screen", "inspect_phone_screen"):
-            needs, _desc = check_confirmation_required(ocr_tool, {})
-            self.assertFalse(needs, ocr_tool)
-
-    async def test_pc_screenshot_gates_before_capture_and_injects_image_url_on_approval(self) -> None:
+    async def test_pc_screen_runs_without_gate_and_injects_image_and_ocr(self) -> None:
         hub = ScriptedClientHub(
             {
-                "capture_pc_screenshot": {
+                "inspect_pc_screen": {
                     "ok": True,
+                    "snapshot_id": "s1",
+                    "elements": 'e1 "Revenue" (10,20 80x20)',
                     "image_jpeg_b64": "LzlqL0FBPT0=",
                     "mime_type": "image/jpeg",
                     "width": 1280,
@@ -715,30 +735,22 @@ class MultimodalImageTests(unittest.IsolatedAsyncioTestCase):
                 return await super()._request_chat_completion(messages)
 
         scripted = [
-            tool_message("capture_pc_screenshot", '{"window_query": "Chrome"}', "call_shot"),
+            tool_message("inspect_pc_screen", '{"window_query": "Chrome"}', "call_shot"),
             {"role": "assistant", "content": "The chart is blue."},
         ]
         engine = CapturingEngine(hub, scripted)
-        first = await engine.run_turn("What color is the chart in Chrome?")
+        result = await engine.run_turn("What color is the chart in Chrome?")
 
-        self.assertEqual(first.status, "confirmation_required")
-        self.assertEqual(hub.calls, [])  # Never captures before approval
-        self.assertIn("Chrome", first.pending_confirmation["description"])
-
-        resumed = await engine.confirm_tool(
-            session_id=first.session_id,
-            confirmation_id=first.pending_confirmation["confirmation_id"],
-            approved=True,
-        )
-        self.assertEqual(resumed.status, "completed")
-        self.assertEqual(resumed.reply, "The chart is blue.")
-        self.assertEqual([name for name, _ in hub.calls], ["capture_pc_screenshot"])
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.reply, "The chart is blue.")
+        self.assertEqual([name for name, _ in hub.calls], ["inspect_pc_screen"])
 
         second_llm_input = seen_messages[-1]
         tool_msgs = [m for m in second_llm_input if m.get("role") == "tool"]
         self.assertEqual(len(tool_msgs), 1)
         self.assertNotIn("LzlqL0FBPT0=", tool_msgs[0]["content"])
         self.assertIn('"image_attached": true', tool_msgs[0]["content"])
+        self.assertIn("Revenue", tool_msgs[0]["content"])
 
         last_msg = second_llm_input[-1]
         self.assertEqual(last_msg["role"], "user")
@@ -746,26 +758,32 @@ class MultimodalImageTests(unittest.IsolatedAsyncioTestCase):
         image_parts = [p for p in last_msg["content"] if p.get("type") == "image_url"]
         self.assertEqual(len(image_parts), 1)
         self.assertEqual(image_parts[0]["image_url"]["url"], "data:image/jpeg;base64,LzlqL0FBPT0=")
-        self.assertTrue(engine._sessions[first.session_id].screen_tainted)
+        self.assertTrue(engine._sessions[result.session_id].screen_tainted)
 
-    async def test_rejected_pc_screenshot_never_calls_pc_client(self) -> None:
+    async def test_rejected_disk_image_read_never_calls_pc_client(self) -> None:
         hub = ScriptedClientHub({})
         scripted = [
-            tool_message("capture_pc_screenshot", "{}", "call_shot"),
-            {"role": "assistant", "content": "Okay, I will not take a screenshot."},
+            tool_message("read_pc_image", '{"path": "C:\\pic.png"}', "call_img"),
+            {"role": "assistant", "content": "Okay, I will not open that file."},
         ]
         engine = FakeAgentEngine(hub, scripted)
-        first = await engine.run_turn("Take a screenshot")
+        first = await engine.run_turn("Read pic.png")
+        self.assertEqual(first.status, "confirmation_required")
         resumed = await engine.confirm_tool(
             session_id=first.session_id,
             confirmation_id=first.pending_confirmation["confirmation_id"],
             approved=False,
+            rejection_reason="That file has private info",
         )
         self.assertEqual(resumed.status, "completed")
         self.assertEqual(hub.calls, [])
         self.assertEqual([c["status"] for c in resumed.tool_calls], ["rejected"])
+        self.assertIn("That file has private info", resumed.tool_calls[0]["summary"])
+        session = engine._sessions[first.session_id]
+        tool_msg = next(m for m in session.messages if m.get("role") == "tool")
+        self.assertIn("That file has private info", tool_msg["content"])
 
-    async def test_phone_screenshot_requires_approval_and_injects_image_url(self) -> None:
+    async def test_phone_screen_auto_executes_and_injects_image_plus_elements(self) -> None:
         hub = FakeClientHub()
         seen_messages: list[list[dict[str, Any]]] = []
 
@@ -783,10 +801,9 @@ class MultimodalImageTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first.status, "confirmation_required")
         pending = first.pending_confirmation
-        self.assertFalse(pending["auto_execute"])
-        self.assertEqual(pending["phone_action"]["action"], "capture_screenshot")
+        self.assertTrue(pending["auto_execute"])
+        self.assertEqual(pending["phone_action"]["action"], "capture_screen")
         self.assertEqual(pending["phone_action"]["max_width"], 900)
-        self.assertIn("Photos", pending["description"])
 
         resumed = await engine.confirm_tool(
             session_id=first.session_id,
@@ -795,7 +812,7 @@ class MultimodalImageTests(unittest.IsolatedAsyncioTestCase):
             phone_screen=self.phone_screen,
             phone_action_result={
                 "ok": True,
-                "action": "capture_screenshot",
+                "action": "capture_screen",
                 "image_jpeg_b64": "UEhPTkVKTUVH",
                 "mime_type": "image/jpeg",
                 "width": 900,
@@ -832,13 +849,6 @@ class MultimodalImageTests(unittest.IsolatedAsyncioTestCase):
         ]
         engine = FakeAgentEngine(hub, scripted)
         turn = await engine.run_turn("Look three times")
-        for _ in range(3):
-            self.assertEqual(turn.status, "confirmation_required")
-            turn = await engine.confirm_tool(
-                session_id=turn.session_id,
-                confirmation_id=turn.pending_confirmation["confirmation_id"],
-                approved=True,
-            )
         self.assertEqual(turn.status, "completed")
         session = engine._sessions[turn.session_id]
         image_urls = []
@@ -864,6 +874,37 @@ class MultimodalImageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.status, "completed")
         self.assertEqual(hub.calls, [])
         self.assertEqual(res.tool_calls[0]["status"], "error")
+
+    async def test_interjection_reconciles_dangling_tool_calls_and_steers_llm(self) -> None:
+        hub = ScriptedClientHub({"prepare_click": PREPARED_INBOX})
+        seen_messages: list[list[dict[str, Any]]] = []
+
+        class CapturingEngine(FakeAgentEngine):
+            async def _request_chat_completion(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+                seen_messages.append([dict(m) for m in messages])
+                return await super()._request_chat_completion(messages)
+
+        scripted = [
+            tool_message("click_screen_element", '{"element_id": "e4"}', "call_pending"),
+            {"role": "assistant", "content": "Switched to Sent Items instead."},
+        ]
+        engine = CapturingEngine(hub, scripted)
+        first = await engine.run_turn("Open Inbox")
+        self.assertEqual(first.status, "confirmation_required")
+
+        steered = await engine.run_turn(
+            prompt="No, open Sent Items instead",
+            session_id=first.session_id,
+            interjection=True,
+        )
+        self.assertEqual(steered.status, "completed")
+        self.assertEqual(steered.reply, "Switched to Sent Items instead.")
+        last_prompt_msgs = seen_messages[-1]
+        tool_close = next(
+            m for m in last_prompt_msgs if m.get("role") == "tool" and m.get("tool_call_id") == "call_pending"
+        )
+        self.assertIn("interrupted_by_user", tool_close["content"])
+        self.assertIn("User interjection", last_prompt_msgs[-1]["content"])
 
 
 if __name__ == "__main__":

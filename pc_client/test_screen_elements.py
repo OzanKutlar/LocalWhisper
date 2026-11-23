@@ -14,9 +14,13 @@ from screen_elements import (  # noqa: E402
     MAX_ELEMENTS,
     ScreenElement,
     SnapshotCache,
+    PREVIEW_MAX_W,
+    PREVIEW_MIN_H,
+    PREVIEW_MIN_W,
     build_elements,
     clamp_offset,
     click_point,
+    compute_zoomed_preview_region,
     parse_ocr_lines,
     resolve_text_target,
     staleness_reason,
@@ -163,6 +167,31 @@ class ClickPointTests(unittest.TestCase):
         self.assertEqual(clamp_offset(99999), MAX_CLICK_OFFSET_PX)
         self.assertEqual(clamp_offset("x"), 0)
         self.assertEqual(clamp_offset(True), 0)
+
+    def test_zoomed_preview_crops_tightly_inside_maximized_window(self) -> None:
+        maximized = {"x": 0, "y": 0, "width": 2560, "height": 1440}
+        box = {"x": 1200, "y": 700, "w": 80, "h": 24}
+        region = compute_zoomed_preview_region(1240, 712, box=box, window_rect=maximized)
+        self.assertEqual(region["W"], PREVIEW_MIN_W)
+        self.assertEqual(region["H"], PREVIEW_MIN_H)
+        self.assertLessEqual(region["X"], 1200)
+        self.assertGreaterEqual(region["X"] + region["W"], 1280)
+        self.assertLessEqual(region["Y"], 700)
+        self.assertGreaterEqual(region["Y"] + region["H"], 724)
+
+    def test_zoomed_preview_clamps_to_edge_and_small_window(self) -> None:
+        win = {"x": 100, "y": 50, "width": 1200, "height": 800}
+        edge = compute_zoomed_preview_region(120, 65, box={"x": 105, "y": 55, "w": 40, "h": 20}, window_rect=win)
+        self.assertEqual(edge["X"], 100)
+        self.assertEqual(edge["Y"], 50)
+
+        tiny = {"x": 10, "y": 20, "width": 240, "height": 150}
+        clamped = compute_zoomed_preview_region(100, 90, box=None, window_rect=tiny)
+        self.assertEqual(clamped, {"X": 10, "Y": 20, "W": 240, "H": 150})
+
+        wide_box = {"x": 500, "y": 400, "w": 300, "h": 30}
+        wide_crop = compute_zoomed_preview_region(650, 415, box=wide_box, window_rect=win)
+        self.assertEqual(wide_crop["W"], PREVIEW_MAX_W)
 
 
 if __name__ == "__main__":

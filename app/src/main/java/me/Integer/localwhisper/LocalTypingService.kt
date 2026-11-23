@@ -541,25 +541,25 @@ class LocalTypingService : AccessibilityService() {
     }
 
     private suspend fun capturePhoneScreenshotAction(actionJson: JSONObject): JSONObject {
+        val actionName = actionJson.optString("action", "capture_screen")
         val maxWidth = actionJson.optInt("max_width", CAPTURE_DEFAULT_MAX_WIDTH)
             .coerceIn(CAPTURE_MIN_WIDTH, CAPTURE_MAX_WIDTH)
-        val bitmap = runWithOverlayHidden(alwaysHide = true) { captureScreenshotWithRetry() }
-            ?: return JSONObject().apply {
-                put("ok", false)
-                put("action", "capture_screenshot")
-                put("error", "Could not capture phone screenshot")
-            }
-        val encoded = encodeBitmapToJpeg(bitmap, maxWidth)
-            ?: return JSONObject().apply {
-                put("ok", false)
-                put("action", "capture_screenshot")
-                put("error", "Captured phone screenshot exceeded size limit")
-            }
         val snapshot = captureBestSnapshot()
         val appName = snapshot?.optString("app_name", "").orEmpty()
+        val bitmap = runWithOverlayHidden(alwaysHide = true) { captureScreenshotWithRetry() }
+        val encoded = if (bitmap != null) encodeBitmapToJpeg(bitmap, maxWidth) else null
+        if (encoded == null) {
+            return JSONObject().apply {
+                put("ok", snapshot != null)
+                put("action", actionName)
+                put("image_unavailable", true)
+                if (appName.isNotBlank()) put("app_name", appName)
+                if (snapshot == null) put("error", "Could not capture phone screenshot or UI tree")
+            }
+        }
         return JSONObject().apply {
             put("ok", true)
-            put("action", "capture_screenshot")
+            put("action", actionName)
             put("image_jpeg_b64", encoded.base64)
             put("mime_type", "image/jpeg")
             put("width", encoded.width)
@@ -570,7 +570,7 @@ class LocalTypingService : AccessibilityService() {
 
     private suspend fun performPhoneActionInternal(actionJson: JSONObject): JSONObject {
         val action = actionJson.optString("action", "click")
-        if (action == "capture_screenshot") {
+        if (action == "capture_screenshot" || action == "capture_screen") {
             return capturePhoneScreenshotAction(actionJson)
         }
         val elementId = actionJson.optString("element_id", "").lowercase()
@@ -780,7 +780,7 @@ class LocalTypingService : AccessibilityService() {
         private const val MAX_SCREEN_NODES_SCANNED = 140
         private const val MAX_UI_ELEMENTS_RETURNED = 85
         private const val MAX_CHILDREN_PER_NODE = 20
-        private const val PREVIEW_MAX_WIDTH = 540
+        private const val PREVIEW_MAX_WIDTH = 720
         private const val SCREENSHOT_RETRY_DELAY_MS = 1050L
         private const val CAPTURE_DEFAULT_MAX_WIDTH = 1080
         private const val CAPTURE_MIN_WIDTH = 320
@@ -843,43 +843,68 @@ class LocalTypingService : AccessibilityService() {
             return service.performPhoneActionInternal(actionJson)
         }
 
-        /** Draws the red highlight box and click point on the cached underlying phone screenshot. */
+        /** Draws a zoomed-in crop around the target element with red highlight box and click point. */
         fun renderPhoneTargetPreviewBase64(actionJson: JSONObject): String {
             val source = cachedUnderlyingScreenshot ?: return ""
+            if (source.width <= 0 || source.height <= 0) return ""
             return try {
-                val copy = source.copy(Bitmap.Config.ARGB_8888, true)
-                val canvas = Canvas(copy)
+                val box = actionJson.optJSONObject("box")
+                val bx = box?.optInt("x", 0) ?: 0
+                val by = box?.optInt("y", 0) ?: 0
+                val bw = box?.optInt("w", 0) ?: 0
+                val bh = box?.optInt("h", 0) ?: 0
+                val px = actionJson.optInt("x", -1)
+                val py = actionJson.optInt("y", -1)
+
+                val centerX = when {
+                    px > 0 && bw > 0 -> (px + bx + bw / 2) / 2
+                    bw > 0 -> bx + bw / 2
+                    px > 0 -> px
+                    else -> source.width / 2
+                }
+                val centerY = when {
+                    py > 0 && bh > 0 -> (py + by + bh / 2) / 2
+                    bh > 0 -> by + bh / 2
+                    py > 0 -> py
+                    else -> source.height / 2
+                }
+
+                val desiredW = maxOf((bw * 2.6f).toInt(), (source.width * 0.65f).toInt())
+                val desiredH = maxOf((bh * 4.2f).toInt(), (source.height * 0.24f).toInt())
+                val cropW = desiredW.coerceIn(minOf(source.width, 420), source.width)
+                val cropH = desiredH.coerceIn(minOf(source.height, 300), minOf(source.height, 760))
+                val cropX = (centerX - cropW / 2).coerceIn(0, (source.width - cropW).coerceAtLeast(0))
+                val cropY = (centerY - cropH / 2).coerceIn(0, (source.height - cropH).coerceAtLeast(0))
+
+                val rawCrop = Bitmap.createBitmap(source, cropX, cropY, cropW, cropH)
+                val mutableCrop = rawCrop.copy(Bitmap.Config.ARGB_8888, true)
+                if (mutableCrop !== rawCrop) rawCrop.recycle()
+
+                val canvas = Canvas(mutableCrop)
                 val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     color = Color.rgb(242, 61, 92)
                     style = Paint.Style.STROKE
-                    strokeWidth = 6f
+                    strokeWidth = 5f
                 }
-                val box = actionJson.optJSONObject("box")
-                if (box != null) {
-                    val bx = box.optInt("x", 0).toFloat()
-                    val by = box.optInt("y", 0).toFloat()
-                    val bw = box.optInt("w", 0).toFloat()
-                    val bh = box.optInt("h", 0).toFloat()
-                    if (bw > 0f && bh > 0f) {
-                        canvas.drawRect(bx - 5f, by - 5f, bx + bw + 5f, by + bh + 5f, paint)
-                    }
+                if (bw > 0 && bh > 0) {
+                    val lx = (bx - cropX).toFloat()
+                    val ly = (by - cropY).toFloat()
+                    canvas.drawRect(lx - 4f, ly - 4f, lx + bw + 4f, ly + bh + 4f, paint)
                 }
-                val px = actionJson.optInt("x", -1)
-                val py = actionJson.optInt("y", -1)
                 if (px > 0 && py > 0) {
-                    canvas.drawCircle(px.toFloat(), py.toFloat(), 14f, paint)
+                    canvas.drawCircle((px - cropX).toFloat(), (py - cropY).toFloat(), 12f, paint)
                 }
-                val scaled = if (copy.width > PREVIEW_MAX_WIDTH) {
-                    val ratio = PREVIEW_MAX_WIDTH.toFloat() / copy.width.toFloat()
-                    val targetH = (copy.height * ratio).toInt().coerceAtLeast(1)
-                    Bitmap.createScaledBitmap(copy, PREVIEW_MAX_WIDTH, targetH, true).also {
-                        if (it !== copy) copy.recycle()
+                val scaled = if (mutableCrop.width > PREVIEW_MAX_WIDTH) {
+                    val ratio = PREVIEW_MAX_WIDTH.toFloat() / mutableCrop.width.toFloat()
+                    val targetH = (mutableCrop.height * ratio).toInt().coerceAtLeast(1)
+                    Bitmap.createScaledBitmap(mutableCrop, PREVIEW_MAX_WIDTH, targetH, true).also {
+                        if (it !== mutableCrop) mutableCrop.recycle()
                     }
                 } else {
-                    copy
+                    mutableCrop
                 }
                 val out = ByteArrayOutputStream()
-                scaled.compress(Bitmap.CompressFormat.JPEG, 72, out)
+                scaled.compress(Bitmap.CompressFormat.JPEG, 84, out)
                 scaled.recycle()
                 Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
             } catch (exc: Exception) {

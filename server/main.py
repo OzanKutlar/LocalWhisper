@@ -66,6 +66,7 @@ class AgentRunRequest(BaseModel):
     session_id: str | None = Field(default=None)
     history: list[dict[str, str]] | None = Field(default=None)
     phone_screen: dict[str, object] | None = Field(default=None)
+    interjection: bool = Field(default=False)
 
 
 class AgentConfirmRequest(BaseModel):
@@ -75,6 +76,7 @@ class AgentConfirmRequest(BaseModel):
     client_id: str | None = Field(default=None)
     phone_screen: dict[str, object] | None = Field(default=None)
     phone_action_result: dict[str, object] | None = Field(default=None)
+    rejection_reason: str | None = Field(default=None, max_length=2000)
 
 
 def create_app(
@@ -279,6 +281,7 @@ def create_app(
                 session_id=request.session_id,
                 history=request.history,
                 phone_screen=request.phone_screen,
+                interjection=request.interjection,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -297,6 +300,7 @@ def create_app(
                 client_id=request.client_id,
                 phone_screen=request.phone_screen,
                 phone_action_result=request.phone_action_result,
+                rejection_reason=request.rejection_reason,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -315,6 +319,7 @@ def create_app(
                     session_id=request.session_id,
                     history=request.history,
                     phone_screen=request.phone_screen,
+                    interjection=request.interjection,
                 ):
                     yield json.dumps(event) + "\n"
             except Exception as exc:
@@ -334,6 +339,7 @@ def create_app(
                     client_id=request.client_id,
                     phone_screen=request.phone_screen,
                     phone_action_result=request.phone_action_result,
+                    rejection_reason=request.rejection_reason,
                 ):
                     yield json.dumps(event) + "\n"
             except Exception as exc:
