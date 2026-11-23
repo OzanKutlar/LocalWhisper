@@ -199,7 +199,7 @@ async def run_client(
                 ws_url,
                 ping_interval=20,
                 ping_timeout=20,
-                max_size=1_048_576,
+                max_size=4_194_304,
             ) as websocket:
                 backoff_s = 2
                 async for raw_message in websocket:

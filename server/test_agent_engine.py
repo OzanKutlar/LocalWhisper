@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_engine import (  # noqa: E402
     AGENT_TOOLS,
+    IMAGE_PRUNED_STUB,
     SNAPSHOT_STUB_NOTE,
     SYSTEM_PROMPT,
     AgentEngine,
@@ -667,6 +668,202 @@ class PhoneClickAndScrollTests(unittest.IsolatedAsyncioTestCase):
         pending = first.pending_confirmation
         self.assertTrue(pending["auto_execute"])
         self.assertEqual(pending["phone_action"]["action"], "scroll")
+
+
+class MultimodalImageTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.phone_screen = {
+            "accessibility_enabled": True,
+            "phone_snapshot_id": "ps1",
+            "app_name": "Photos",
+            "package_name": "com.google.android.apps.photos",
+            "ui_elements": [],
+        }
+
+    def test_image_tools_require_confirmation_while_ocr_does_not(self) -> None:
+        for image_tool, args in (
+            ("capture_pc_screenshot", {"window_query": "Chrome"}),
+            ("capture_phone_screenshot", {}),
+            ("read_pc_image", {"path": "C:\\Users\\Ozan\\Desktop\\pic.png"}),
+        ):
+            needs, desc = check_confirmation_required(image_tool, args)
+            self.assertTrue(needs, image_tool)
+            self.assertTrue(len(desc) > 10)
+
+        for ocr_tool in ("inspect_pc_screen", "inspect_phone_screen"):
+            needs, _desc = check_confirmation_required(ocr_tool, {})
+            self.assertFalse(needs, ocr_tool)
+
+    async def test_pc_screenshot_gates_before_capture_and_injects_image_url_on_approval(self) -> None:
+        hub = ScriptedClientHub(
+            {
+                "capture_pc_screenshot": {
+                    "ok": True,
+                    "image_jpeg_b64": "LzlqL0FBPT0=",
+                    "mime_type": "image/jpeg",
+                    "width": 1280,
+                    "height": 720,
+                    "window_title": "Chrome",
+                }
+            }
+        )
+        seen_messages: list[list[dict[str, Any]]] = []
+
+        class CapturingEngine(FakeAgentEngine):
+            async def _request_chat_completion(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+                seen_messages.append([dict(m) for m in messages])
+                return await super()._request_chat_completion(messages)
+
+        scripted = [
+            tool_message("capture_pc_screenshot", '{"window_query": "Chrome"}', "call_shot"),
+            {"role": "assistant", "content": "The chart is blue."},
+        ]
+        engine = CapturingEngine(hub, scripted)
+        first = await engine.run_turn("What color is the chart in Chrome?")
+
+        self.assertEqual(first.status, "confirmation_required")
+        self.assertEqual(hub.calls, [])  # Never captures before approval
+        self.assertIn("Chrome", first.pending_confirmation["description"])
+
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=first.pending_confirmation["confirmation_id"],
+            approved=True,
+        )
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual(resumed.reply, "The chart is blue.")
+        self.assertEqual([name for name, _ in hub.calls], ["capture_pc_screenshot"])
+
+        second_llm_input = seen_messages[-1]
+        tool_msgs = [m for m in second_llm_input if m.get("role") == "tool"]
+        self.assertEqual(len(tool_msgs), 1)
+        self.assertNotIn("LzlqL0FBPT0=", tool_msgs[0]["content"])
+        self.assertIn('"image_attached": true', tool_msgs[0]["content"])
+
+        last_msg = second_llm_input[-1]
+        self.assertEqual(last_msg["role"], "user")
+        self.assertIsInstance(last_msg["content"], list)
+        image_parts = [p for p in last_msg["content"] if p.get("type") == "image_url"]
+        self.assertEqual(len(image_parts), 1)
+        self.assertEqual(image_parts[0]["image_url"]["url"], "data:image/jpeg;base64,LzlqL0FBPT0=")
+        self.assertTrue(engine._sessions[first.session_id].screen_tainted)
+
+    async def test_rejected_pc_screenshot_never_calls_pc_client(self) -> None:
+        hub = ScriptedClientHub({})
+        scripted = [
+            tool_message("capture_pc_screenshot", "{}", "call_shot"),
+            {"role": "assistant", "content": "Okay, I will not take a screenshot."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        first = await engine.run_turn("Take a screenshot")
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=first.pending_confirmation["confirmation_id"],
+            approved=False,
+        )
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual(hub.calls, [])
+        self.assertEqual([c["status"] for c in resumed.tool_calls], ["rejected"])
+
+    async def test_phone_screenshot_requires_approval_and_injects_image_url(self) -> None:
+        hub = FakeClientHub()
+        seen_messages: list[list[dict[str, Any]]] = []
+
+        class CapturingEngine(FakeAgentEngine):
+            async def _request_chat_completion(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+                seen_messages.append([dict(m) for m in messages])
+                return await super()._request_chat_completion(messages)
+
+        scripted = [
+            tool_message("capture_phone_screenshot", '{"max_width": 900}', "call_pshot"),
+            {"role": "assistant", "content": "That is a golden retriever."},
+        ]
+        engine = CapturingEngine(hub, scripted)
+        first = await engine.run_turn("What dog is on my phone?", phone_screen=self.phone_screen)
+
+        self.assertEqual(first.status, "confirmation_required")
+        pending = first.pending_confirmation
+        self.assertFalse(pending["auto_execute"])
+        self.assertEqual(pending["phone_action"]["action"], "capture_screenshot")
+        self.assertEqual(pending["phone_action"]["max_width"], 900)
+        self.assertIn("Photos", pending["description"])
+
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=pending["confirmation_id"],
+            approved=True,
+            phone_screen=self.phone_screen,
+            phone_action_result={
+                "ok": True,
+                "action": "capture_screenshot",
+                "image_jpeg_b64": "UEhPTkVKTUVH",
+                "mime_type": "image/jpeg",
+                "width": 900,
+                "height": 1900,
+                "app_name": "Photos",
+            },
+        )
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual(resumed.reply, "That is a golden retriever.")
+        last_msg = seen_messages[-1][-1]
+        self.assertEqual(last_msg["role"], "user")
+        image_parts = [p for p in last_msg["content"] if p.get("type") == "image_url"]
+        self.assertEqual(len(image_parts), 1)
+        self.assertEqual(image_parts[0]["image_url"]["url"], "data:image/jpeg;base64,UEhPTkVKTUVH")
+
+    async def test_old_images_are_pruned_past_context_limit(self) -> None:
+        hub = ScriptedClientHub(
+            {
+                "capture_pc_screenshot": {
+                    "ok": True,
+                    "image_jpeg_b64": "SU1BR0U=",
+                    "mime_type": "image/jpeg",
+                    "width": 800,
+                    "height": 600,
+                    "window_title": "Desktop",
+                }
+            }
+        )
+        scripted = [
+            tool_message("capture_pc_screenshot", "{}", "c1"),
+            tool_message("capture_pc_screenshot", "{}", "c2"),
+            tool_message("capture_pc_screenshot", "{}", "c3"),
+            {"role": "assistant", "content": "Looked 3 times."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        turn = await engine.run_turn("Look three times")
+        for _ in range(3):
+            self.assertEqual(turn.status, "confirmation_required")
+            turn = await engine.confirm_tool(
+                session_id=turn.session_id,
+                confirmation_id=turn.pending_confirmation["confirmation_id"],
+                approved=True,
+            )
+        self.assertEqual(turn.status, "completed")
+        session = engine._sessions[turn.session_id]
+        image_urls = []
+        pruned_stubs = []
+        for msg in session.messages:
+            if isinstance(msg.get("content"), list):
+                for part in msg["content"]:
+                    if part.get("type") == "image_url":
+                        image_urls.append(part)
+                    elif part.get("text") == IMAGE_PRUNED_STUB:
+                        pruned_stubs.append(part)
+        self.assertEqual(len(image_urls), 2)
+        self.assertEqual(len(pruned_stubs), 1)
+
+    async def test_read_pc_image_empty_path_returns_error_without_gate(self) -> None:
+        hub = FakeClientHub()
+        scripted = [
+            tool_message("read_pc_image", '{"path": ""}', "call_empty"),
+            {"role": "assistant", "content": "Please give me a file path."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        res = await engine.run_turn("Read an image")
+        self.assertEqual(res.status, "completed")
+        self.assertEqual(hub.calls, [])
+        self.assertEqual(res.tool_calls[0]["status"], "error")
 
 
 if __name__ == "__main__":

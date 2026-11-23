@@ -51,6 +51,15 @@ PREVIEW_MAX_WIDTH = 720
 PREVIEW_FALLBACK_W = 720
 PREVIEW_FALLBACK_H = 480
 PREVIEW_MAX_BYTES = 400_000
+SCREENSHOT_DEFAULT_MAX_WIDTH = 1280
+SCREENSHOT_MIN_WIDTH = 320
+SCREENSHOT_MAX_WIDTH = 1920
+SCREENSHOT_MAX_BYTES = 650_000
+SCREENSHOT_RETRY_WIDTH = 960
+SCREENSHOT_PRIMARY_QUALITY = 80
+SCREENSHOT_FALLBACK_QUALITY = 62
+MAX_IMAGE_FILE_BYTES = 25 * 1024 * 1024
+ALLOWED_IMAGE_EXTENSIONS = frozenset({'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tif', '.tiff'})
 AFTER_ACTION_DELAY_S = 0.4
 AFTER_ACTION_ELEMENT_LIMIT = 60
 FOCUS_SETTLE_S = 0.15
@@ -164,6 +173,10 @@ def dispatch_pc_tool(
         return run_list_pc_windows(arguments)
     if tool_name == "inspect_pc_screen":
         return run_inspect_pc_screen(arguments)
+    if tool_name == "capture_pc_screenshot":
+        return run_capture_pc_screenshot(arguments)
+    if tool_name == "read_pc_image":
+        return run_read_pc_image(arguments)
     if tool_name == "prepare_click":
         return run_prepare_click(arguments)
     if tool_name == "click_screen_element":
@@ -469,6 +482,157 @@ def _ocr_params(bounds: dict[str, int] | None) -> dict[str, int]:
     height = min(int(bounds["height"]), MAX_CAPTURE_H)
     scale = 2 if width < OCR_UPSCALE_BELOW_WIDTH else 1
     return {"X": int(bounds["x"]), "Y": int(bounds["y"]), "W": width, "H": height, "Scale": scale}
+
+
+# ---------------------------------------------------------------- Multimodal images (screenshots & files)
+
+def _clamp_image_max_width(raw_value: Any) -> int:
+    parsed = _optional_int(raw_value)
+    if parsed is None:
+        return SCREENSHOT_DEFAULT_MAX_WIDTH
+    return max(SCREENSHOT_MIN_WIDTH, min(parsed, SCREENSHOT_MAX_WIDTH))
+
+
+def _screenshot_region(bounds: dict[str, int] | None) -> dict[str, int]:
+    if not bounds or bounds.get("width", 0) <= MIN_CAPTURE_PX or bounds.get("height", 0) <= MIN_CAPTURE_PX:
+        return {"X": 0, "Y": 0, "W": 0, "H": 0}
+    return {
+        "X": int(bounds["x"]),
+        "Y": int(bounds["y"]),
+        "W": min(int(bounds["width"]), MAX_CAPTURE_W),
+        "H": min(int(bounds["height"]), MAX_CAPTURE_H),
+    }
+
+
+def _capture_encoded_jpeg(
+    mode: str,
+    base_params: dict[str, Any],
+    max_width: int,
+) -> tuple[str, int, int, str]:
+    """Runs screen_capture.ps1 to produce a bounded JPEG and returns (b64, width, height, status)."""
+    attempts = (
+        (max_width, SCREENSHOT_PRIMARY_QUALITY),
+        (min(max_width, SCREENSHOT_RETRY_WIDTH), SCREENSHOT_FALLBACK_QUALITY),
+    )
+    last_status = "image_encoding_failed"
+    for attempt_width, quality in attempts:
+        fd, path = tempfile.mkstemp(prefix="localwhisper_img_", suffix=".jpg")
+        os.close(fd)
+        try:
+            params = {
+                **base_params,
+                "MaxWidth": attempt_width,
+                "Quality": quality,
+                "OutPath": path,
+            }
+            payload, status = _run_screen_script(mode, params)
+            if payload is None:
+                return "", 0, 0, status
+            data = Path(path).read_bytes()
+            if not data:
+                last_status = "image_empty"
+                continue
+            if len(data) <= SCREENSHOT_MAX_BYTES:
+                width = int(payload.get("width", 0) or 0)
+                height = int(payload.get("height", 0) or 0)
+                return base64.b64encode(data).decode("ascii"), width, height, "ok"
+            last_status = "image_too_large"
+        except OSError as exc:
+            return "", 0, 0, f"image_io_failed: {exc}"
+        finally:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+    return "", 0, 0, last_status
+
+
+def run_capture_pc_screenshot(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Captures a clean JPEG screenshot of the primary PC screen or a specific window."""
+    window_query = str(arguments.get("window_query", "") or "").strip()
+    max_width = _clamp_image_max_width(arguments.get("max_width"))
+
+    all_windows, _fg_hex = _enumerate_win32_windows()
+    visible_windows = [w for w in all_windows if w.get("state") != "minimized"]
+    target, query_matched = _pick_inspect_target(all_windows, visible_windows, window_query)
+
+    if window_query and query_matched and target and target.get("state") == "minimized":
+        return {
+            "ok": False,
+            "error": "target_minimized: focus the window with manage_pc_app first",
+        }
+
+    use_window_bounds = bool(window_query and query_matched and target is not None)
+    bounds = target.get("bounds") if use_window_bounds and target is not None else None
+    b64, width, height, status = _capture_encoded_jpeg(
+        "screenshot",
+        _screenshot_region(bounds),
+        max_width,
+    )
+    if status != "ok":
+        return {"ok": False, "error": status}
+
+    title = str(target.get("title", "")) if target else ""
+    label = title or "(untitled)"
+    if not use_window_bounds:
+        label = f"Primary screen (foreground: {label})"
+    return {
+        "ok": True,
+        "image_jpeg_b64": b64,
+        "mime_type": "image/jpeg",
+        "width": width,
+        "height": height,
+        "window_title": label,
+        "window_query_matched": query_matched,
+    }
+
+
+def validate_image_file_path(raw_path: str) -> Path:
+    """Validates that raw_path points to an existing, supported, bounded image file."""
+    cleaned = str(raw_path or "").strip().strip('"').strip("'")
+    if not cleaned:
+        raise ValueError("Image file path must not be empty")
+    expanded = os.path.expandvars(os.path.expanduser(cleaned))
+    path = Path(expanded)
+    if not path.is_file():
+        raise ValueError(f"Image file not found: {cleaned}")
+    suffix = path.suffix.lower()
+    if suffix not in ALLOWED_IMAGE_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_IMAGE_EXTENSIONS))
+        raise ValueError(f"Unsupported image type '{suffix or '(none)'}'. Supported: {allowed}")
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise ValueError(f"Could not read image metadata: {exc}") from exc
+    if size <= 0:
+        raise ValueError("Image file is empty")
+    if size > MAX_IMAGE_FILE_BYTES:
+        raise ValueError(f"Image file exceeds {MAX_IMAGE_FILE_BYTES // (1024 * 1024)} MB limit")
+    return path.resolve()
+
+
+def run_read_pc_image(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Reads an approved local image file from the PC and returns a resized JPEG payload."""
+    raw_path = str(arguments.get("path", "") or "")
+    resolved = validate_image_file_path(raw_path)
+    max_width = _clamp_image_max_width(arguments.get("max_width"))
+    b64, width, height, status = _capture_encoded_jpeg(
+        "load_image",
+        {"InPath": str(resolved)},
+        max_width,
+    )
+    if status != "ok":
+        return {"ok": False, "error": status}
+    return {
+        "ok": True,
+        "image_jpeg_b64": b64,
+        "mime_type": "image/jpeg",
+        "width": width,
+        "height": height,
+        "file_name": resolved.name,
+        "file_path": str(resolved),
+    }
 
 
 def _run_screen_script(mode: str, params: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:

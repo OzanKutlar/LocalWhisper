@@ -1,9 +1,13 @@
 # LocalWhisper screen capture helper (Windows PowerShell 5.1).
 # Modes:
-#   ocr      Capture a region (or the primary screen when W/H are 0), run Windows OCR and
-#            print every text line with its bounding box in physical screen pixels.
-#   preview  Capture a region, outline the click target, mark the click point and save a
-#            small JPEG to OutPath.
+#   ocr         Capture a region (or the primary screen when W/H are 0), run Windows OCR and
+#               print every text line with its bounding box in physical screen pixels.
+#   preview     Capture a region, outline the click target, mark the click point and save a
+#               small JPEG to OutPath.
+#   screenshot  Capture a clean region (or full primary screen), resize to MaxWidth and save
+#               a JPEG to OutPath.
+#   load_image  Load an existing image file from InPath, resize to MaxWidth and save a JPEG
+#               to OutPath.
 # Always prints exactly one compact JSON object on stdout.
 
 param(
@@ -20,6 +24,8 @@ param(
     [int]$PointX = -100000,
     [int]$PointY = -100000,
     [int]$MaxWidth = 720,
+    [int]$Quality = 80,
+    [string]$InPath = '',
     [string]$OutPath = ''
 )
 
@@ -179,34 +185,68 @@ function Save-Jpeg($bitmap, [string]$path, [long]$quality) {
     } finally { $params.Dispose() }
 }
 
+function Save-ResizedJpeg($bitmap, [string]$path, [int]$maxWidth, [long]$quality) {
+    $safeQuality = [Math]::Max(20, [Math]::Min($quality, 95))
+    $factor = 1.0
+    if ($maxWidth -gt 0 -and $bitmap.Width -gt $maxWidth) {
+        $factor = $maxWidth / [double]$bitmap.Width
+    }
+    $output = $bitmap
+    if ($factor -lt 1.0) { $output = Resize-Bitmap $bitmap $factor }
+    $outW = $output.Width
+    $outH = $output.Height
+    try { Save-Jpeg $output $path $safeQuality }
+    finally { if ($factor -lt 1.0) { $output.Dispose() } }
+    return @{ ok = $true; width = $outW; height = $outH; source_width = $bitmap.Width; source_height = $bitmap.Height }
+}
+
 function Invoke-PreviewMode($region) {
     if ([string]::IsNullOrWhiteSpace($OutPath)) { throw 'OutPath is required for preview mode' }
     $capture = New-Capture $region
     try {
         Add-TargetMarker $capture $region
-        $factor = 1.0
-        if ($MaxWidth -gt 0 -and $capture.Width -gt $MaxWidth) { $factor = $MaxWidth / $capture.Width }
-        $output = $capture
-        if ($factor -lt 1.0) { $output = Resize-Bitmap $capture $factor }
-        $outW = $output.Width
-        $outH = $output.Height
-        try { Save-Jpeg $output $OutPath 70 }
-        finally { if ($factor -lt 1.0) { $output.Dispose() } }
-        return @{ ok = $true; width = $outW; height = $outH }
+        return Save-ResizedJpeg $capture $OutPath $MaxWidth 70
     } finally { $capture.Dispose() }
+}
+
+function Invoke-ScreenshotMode($region) {
+    if ([string]::IsNullOrWhiteSpace($OutPath)) { throw 'OutPath is required for screenshot mode' }
+    $capture = New-Capture $region
+    try {
+        return Save-ResizedJpeg $capture $OutPath $MaxWidth $Quality
+    } finally { $capture.Dispose() }
+}
+
+function Invoke-LoadImageMode {
+    if ([string]::IsNullOrWhiteSpace($InPath)) { throw 'InPath is required for load_image mode' }
+    if ([string]::IsNullOrWhiteSpace($OutPath)) { throw 'OutPath is required for load_image mode' }
+    if (-not (Test-Path -LiteralPath $InPath -PathType Leaf)) { throw 'Image file does not exist' }
+    $img = [System.Drawing.Image]::FromFile($InPath)
+    try {
+        $bmp = New-Object System.Drawing.Bitmap($img)
+        try {
+            return Save-ResizedJpeg $bmp $OutPath $MaxWidth $Quality
+        } finally { $bmp.Dispose() }
+    } finally { $img.Dispose() }
 }
 
 try {
     Enable-DpiAwareness
     Add-Type -AssemblyName System.Drawing
-    $region = Resolve-Region
-    if ($region.w -le 0 -or $region.h -le 0) { throw 'Empty capture region' }
-    if ($Mode -eq 'ocr') {
-        Write-Result (Invoke-OcrMode $region)
-    } elseif ($Mode -eq 'preview') {
-        Write-Result (Invoke-PreviewMode $region)
+    if ($Mode -eq 'load_image') {
+        Write-Result (Invoke-LoadImageMode)
     } else {
-        Write-Result @{ ok = $false; error = ('unknown mode: ' + $Mode) }
+        $region = Resolve-Region
+        if ($region.w -le 0 -or $region.h -le 0) { throw 'Empty capture region' }
+        if ($Mode -eq 'ocr') {
+            Write-Result (Invoke-OcrMode $region)
+        } elseif ($Mode -eq 'preview') {
+            Write-Result (Invoke-PreviewMode $region)
+        } elseif ($Mode -eq 'screenshot') {
+            Write-Result (Invoke-ScreenshotMode $region)
+        } else {
+            Write-Result @{ ok = $false; error = ('unknown mode: ' + $Mode) }
+        }
     }
 } catch {
     Write-Result @{ ok = $false; error = $_.Exception.Message }

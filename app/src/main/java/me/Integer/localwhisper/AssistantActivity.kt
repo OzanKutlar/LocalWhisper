@@ -733,15 +733,20 @@ class AssistantActivity : AppCompatActivity() {
         setUiState(UiState.AGENT_RESULT)
     }
 
-    /** Briefly hides the overlay sheet while executing a phone tap/type/scroll on the underlying app. */
+    /** Briefly hides the overlay sheet while executing a phone tap/type/scroll/screenshot on the underlying app. */
     private suspend fun runPhoneUiActionWithOverlayPeek(phoneAction: JSONObject): JSONObject {
+        val isScreenshot = phoneAction.optString("action", "") == "capture_screenshot"
         window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
         binding.overlayScrim.alpha = 0f
         binding.sheetCard.alpha = 0f
+        if (isScreenshot) {
+            binding.overlayScrim.visibility = View.INVISIBLE
+        }
         return try {
-            delay(120L)
+            delay(if (isScreenshot) 180L else 120L)
             LocalTypingService.executePhoneUiAction(phoneAction)
         } finally {
+            binding.overlayScrim.visibility = View.VISIBLE
             binding.overlayScrim.alpha = 1f
             binding.sheetCard.alpha = 1f
             window.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
@@ -751,9 +756,10 @@ class AssistantActivity : AppCompatActivity() {
     /** Shows the PC or phone screenshot with the click target outlined, when available. */
     private fun bindConfirmationPreview(pending: PendingConfirmationInfo) {
         val imageView = binding.confirmationPreviewImage
+        val phoneActionType = pending.phoneAction?.optString("action", "").orEmpty()
         val b64 = if (pending.previewImageB64.isNotBlank()) {
             pending.previewImageB64
-        } else if (pending.phoneAction != null) {
+        } else if (pending.phoneAction != null && phoneActionType in setOf("click", "type")) {
             LocalTypingService.renderPhoneTargetPreviewBase64(pending.phoneAction)
         } else {
             ""

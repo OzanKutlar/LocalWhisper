@@ -420,7 +420,11 @@ class LocalTypingService : AccessibilityService() {
         }
     }
 
-    private suspend fun captureScreenshotSuspend(): Bitmap? = suspendCancellableCoroutine { cont ->
+    private data class ScreenshotAttempt(val bitmap: Bitmap?, val errorCode: Int)
+
+    private data class EncodedJpeg(val base64: String, val width: Int, val height: Int)
+
+    private suspend fun captureScreenshotAttempt(): ScreenshotAttempt = suspendCancellableCoroutine { cont ->
         try {
             takeScreenshot(
                 Display.DEFAULT_DISPLAY,
@@ -440,21 +444,103 @@ class LocalTypingService : AccessibilityService() {
                         } catch (_: Exception) {
                             null
                         }
-                        if (cont.isActive) cont.resume(bitmap)
+                        if (cont.isActive) cont.resume(ScreenshotAttempt(bitmap, 0))
                     }
 
                     override fun onFailure(errorCode: Int) {
-                        if (cont.isActive) cont.resume(null)
+                        if (cont.isActive) cont.resume(ScreenshotAttempt(null, errorCode))
                     }
                 }
             )
         } catch (_: Exception) {
-            if (cont.isActive) cont.resume(null)
+            if (cont.isActive) cont.resume(ScreenshotAttempt(null, -1))
+        }
+    }
+
+    private suspend fun captureScreenshotSuspend(): Bitmap? = captureScreenshotAttempt().bitmap
+
+    private suspend fun captureScreenshotWithRetry(): Bitmap? {
+        val first = captureScreenshotAttempt()
+        if (first.bitmap != null) return first.bitmap
+        if (first.errorCode == ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) {
+            delay(SCREENSHOT_RETRY_DELAY_MS)
+            val second = captureScreenshotAttempt()
+            if (second.bitmap != null) return second.bitmap
+        }
+        return cachedUnderlyingScreenshot
+    }
+
+    private fun encodeBitmapToJpeg(source: Bitmap, maxWidth: Int): EncodedJpeg? {
+        val attempts = listOf(
+            maxWidth to CAPTURE_PRIMARY_QUALITY,
+            minOf(maxWidth, CAPTURE_FALLBACK_WIDTH) to CAPTURE_FALLBACK_QUALITY
+        )
+        for ((targetMaxWidth, quality) in attempts) {
+            val scaled = if (source.width > targetMaxWidth) {
+                val ratio = targetMaxWidth.toFloat() / source.width.toFloat()
+                val targetH = (source.height * ratio).toInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(source, targetMaxWidth, targetH, true)
+            } else {
+                source
+            }
+            val out = ByteArrayOutputStream()
+            val ok = try {
+                scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            } finally {
+                if (scaled !== source) scaled.recycle()
+            }
+            if (!ok) continue
+            val bytes = out.toByteArray()
+            if (bytes.isNotEmpty() && bytes.size <= CAPTURE_MAX_BYTES) {
+                val finalWidth = minOf(source.width, targetMaxWidth)
+                val finalHeight = if (source.width > targetMaxWidth) {
+                    (source.height * (targetMaxWidth.toFloat() / source.width.toFloat())).toInt().coerceAtLeast(1)
+                } else {
+                    source.height
+                }
+                return EncodedJpeg(
+                    base64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
+                    width = finalWidth,
+                    height = finalHeight
+                )
+            }
+        }
+        return null
+    }
+
+    private suspend fun capturePhoneScreenshotAction(actionJson: JSONObject): JSONObject {
+        val maxWidth = actionJson.optInt("max_width", CAPTURE_DEFAULT_MAX_WIDTH)
+            .coerceIn(CAPTURE_MIN_WIDTH, CAPTURE_MAX_WIDTH)
+        val bitmap = captureScreenshotWithRetry()
+            ?: return JSONObject().apply {
+                put("ok", false)
+                put("action", "capture_screenshot")
+                put("error", "Could not capture phone screenshot")
+            }
+        val encoded = encodeBitmapToJpeg(bitmap, maxWidth)
+            ?: return JSONObject().apply {
+                put("ok", false)
+                put("action", "capture_screenshot")
+                put("error", "Captured phone screenshot exceeded size limit")
+            }
+        val snapshot = captureBestSnapshot()
+        val appName = snapshot?.optString("app_name", "").orEmpty()
+        return JSONObject().apply {
+            put("ok", true)
+            put("action", "capture_screenshot")
+            put("image_jpeg_b64", encoded.base64)
+            put("mime_type", "image/jpeg")
+            put("width", encoded.width)
+            put("height", encoded.height)
+            if (appName.isNotBlank()) put("app_name", appName)
         }
     }
 
     private suspend fun performPhoneActionInternal(actionJson: JSONObject): JSONObject {
         val action = actionJson.optString("action", "click")
+        if (action == "capture_screenshot") {
+            return capturePhoneScreenshotAction(actionJson)
+        }
         val elementId = actionJson.optString("element_id", "").lowercase()
         val x = actionJson.optInt("x", 0)
         val y = actionJson.optInt("y", 0)
@@ -642,6 +728,14 @@ class LocalTypingService : AccessibilityService() {
         private const val MAX_UI_ELEMENTS_RETURNED = 85
         private const val MAX_CHILDREN_PER_NODE = 20
         private const val PREVIEW_MAX_WIDTH = 540
+        private const val SCREENSHOT_RETRY_DELAY_MS = 1050L
+        private const val CAPTURE_DEFAULT_MAX_WIDTH = 1080
+        private const val CAPTURE_MIN_WIDTH = 320
+        private const val CAPTURE_MAX_WIDTH = 1440
+        private const val CAPTURE_FALLBACK_WIDTH = 720
+        private const val CAPTURE_PRIMARY_QUALITY = 80
+        private const val CAPTURE_FALLBACK_QUALITY = 62
+        private const val CAPTURE_MAX_BYTES = 600_000
 
         private val snapshotCounter = AtomicInteger(0)
 

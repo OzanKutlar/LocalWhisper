@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import base64
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pc_tools import (  # noqa: E402
+    SCREENSHOT_MAX_WIDTH,
+    SCREENSHOT_MIN_WIDTH,
     build_media_ahk_token,
     filter_windows_list,
     run_ahk_sequence,
+    run_capture_pc_screenshot,
+    run_read_pc_image,
     validate_http_url,
+    validate_image_file_path,
 )
 
 
@@ -108,6 +116,93 @@ class WindowListFilterTests(unittest.TestCase):
         matched = filter_windows_list(self.sample_windows, query="", include_minimized=False)
         self.assertEqual(len(matched), 1)
         self.assertEqual(matched[0]["process_name"], "Code.exe")
+
+
+class ImageToolsTests(unittest.TestCase):
+    def test_validate_image_file_path_rejects_bad_extensions_and_missing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            txt_path = Path(tmp_dir) / "notes.txt"
+            txt_path.write_text("hello", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                validate_image_file_path(str(txt_path))
+            with self.assertRaises(ValueError):
+                validate_image_file_path(str(Path(tmp_dir) / "missing.png"))
+            empty_png = Path(tmp_dir) / "empty.png"
+            empty_png.write_bytes(b"")
+            with self.assertRaises(ValueError):
+                validate_image_file_path(str(empty_png))
+            valid_png = Path(tmp_dir) / "chart.png"
+            valid_png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+            self.assertEqual(validate_image_file_path(str(valid_png)), valid_png.resolve())
+
+    def test_run_capture_pc_screenshot_returns_jpeg_and_clamps_width(self) -> None:
+        fake_windows = [
+            {
+                "hwnd": "0x101",
+                "_hwnd_int": 257,
+                "process_name": "chrome.exe",
+                "title": "Dashboard - Google Chrome",
+                "is_foreground": True,
+                "state": "normal",
+                "bounds": {"x": 10, "y": 20, "width": 1200, "height": 800},
+            }
+        ]
+        captured_params: list[dict[str, object]] = []
+
+        def fake_script(mode: str, params: dict[str, object]):
+            captured_params.append({"mode": mode, **params})
+            Path(str(params["OutPath"])).write_bytes(b"\xff\xd8\xff\xe0FAKEJPEG")
+            return {"ok": True, "width": 640, "height": 400}, "ok"
+
+        with (
+            mock.patch("pc_tools._enumerate_win32_windows", return_value=(fake_windows, "0x101")),
+            mock.patch("pc_tools._run_screen_script", side_effect=fake_script),
+        ):
+            result = run_capture_pc_screenshot({"window_query": "chrome", "max_width": 99999})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["mime_type"], "image/jpeg")
+        self.assertEqual(result["width"], 640)
+        self.assertEqual(base64.b64decode(result["image_jpeg_b64"]), b"\xff\xd8\xff\xe0FAKEJPEG")
+        self.assertEqual(captured_params[0]["mode"], "screenshot")
+        self.assertEqual(captured_params[0]["MaxWidth"], SCREENSHOT_MAX_WIDTH)
+
+    def test_run_capture_pc_screenshot_rejects_minimized_target_window(self) -> None:
+        fake_windows = [
+            {
+                "hwnd": "0x202",
+                "_hwnd_int": 514,
+                "process_name": "chrome.exe",
+                "title": "Hidden - Google Chrome",
+                "is_foreground": False,
+                "state": "minimized",
+                "bounds": {"x": 0, "y": 0, "width": 0, "height": 0},
+            }
+        ]
+        with mock.patch("pc_tools._enumerate_win32_windows", return_value=(fake_windows, None)):
+            result = run_capture_pc_screenshot({"window_query": "chrome"})
+        self.assertFalse(result["ok"])
+        self.assertIn("target_minimized", result["error"])
+
+    def test_run_read_pc_image_encodes_existing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            img_path = Path(tmp_dir) / "sample.jpg"
+            img_path.write_bytes(b"\xff\xd8\xff\xe0RAW")
+            captured_params: list[dict[str, object]] = []
+
+            def fake_script(mode: str, params: dict[str, object]):
+                captured_params.append({"mode": mode, **params})
+                Path(str(params["OutPath"])).write_bytes(b"\xff\xd8\xff\xe0RESIZED")
+                return {"ok": True, "width": 320, "height": 240}, "ok"
+
+            with mock.patch("pc_tools._run_screen_script", side_effect=fake_script):
+                result = run_read_pc_image({"path": str(img_path), "max_width": 50})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["file_name"], "sample.jpg")
+        self.assertEqual(base64.b64decode(result["image_jpeg_b64"]), b"\xff\xd8\xff\xe0RESIZED")
+        self.assertEqual(captured_params[0]["mode"], "load_image")
+        self.assertEqual(captured_params[0]["MaxWidth"], SCREENSHOT_MIN_WIDTH)
 
 
 if __name__ == "__main__":
