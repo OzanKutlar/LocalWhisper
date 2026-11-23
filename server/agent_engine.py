@@ -16,7 +16,12 @@ from typing import Any
 import httpx
 
 from client_hub import ClientDispatchError, ClientHub, NoClientConnectedError
-from phone_elements import format_phone_screen_payload, resolve_phone_target
+from phone_elements import (
+    box_2d_to_screen_box,
+    format_phone_screen_payload,
+    resolve_phone_target,
+    screen_size_from,
+)
 
 LOGGER = logging.getLogger("localwhisper.agent")
 
@@ -34,11 +39,16 @@ IMAGE_PRUNED_STUB = "[Earlier image removed from context to save memory]"
 
 # Click-style tools are resolved first, then always shown to the user for approval.
 PC_CLICK_TOOLS = frozenset({"click_screen_element", "type_into_element"})
-PHONE_CLICK_TOOLS = frozenset({"click_phone_element", "type_into_phone_element"})
+PHONE_CLICK_TOOLS = frozenset({"click_phone_element", "type_into_phone_element", "tap_phone_point"})
 CLICK_TOOLS = PC_CLICK_TOOLS | PHONE_CLICK_TOOLS
 # Screen tools return BOTH visual JPEG + OCR/accessibility together without user authorization.
 PC_VISUAL_SCREEN_TOOLS = frozenset({"inspect_pc_screen", "capture_pc_screenshot"})
 PHONE_VISUAL_SCREEN_TOOLS = frozenset({"inspect_phone_screen", "capture_phone_screenshot"})
+# Tools that only look at a screen; several in a row without an action means the agent is stuck.
+PASSIVE_SCREEN_TOOLS = PC_VISUAL_SCREEN_TOOLS | PHONE_VISUAL_SCREEN_TOOLS
+# Passive tools never reset the repeated-read counter because they do not change the screen.
+PASSIVE_TOOLS = PASSIVE_SCREEN_TOOLS | frozenset({"list_pc_windows"})
+MAX_CONSECUTIVE_SCREEN_READS = 2
 # Reading arbitrary image files from disk still requires explicit user approval.
 GATED_IMAGE_TOOLS = frozenset({"read_pc_image"})
 PC_IMAGE_TOOLS = PC_VISUAL_SCREEN_TOOLS | GATED_IMAGE_TOOLS
@@ -56,6 +66,7 @@ SNAPSHOT_TOOLS = frozenset(
         "click_phone_element",
         "type_into_phone_element",
         "scroll_phone",
+        "tap_phone_point",
     }
 )
 # Tools whose results contain untrusted on-screen or in-image text (emails, chats, web pages, photos).
@@ -140,14 +151,20 @@ SYSTEM_PROMPT = (
     "`click_screen_element` or `type_into_element` using an element_id from the LATEST snapshot, and "
     "use `scroll_pc` to reveal more. The user approves every click on their phone first. Each "
     "click/type/scroll returns an 'after' snapshot of the new screen; use its ids next, because older "
-    "snapshots become invalid. Never guess coordinates. If a result says `ambiguous` or `no_match`, "
+    "snapshots become invalid. Never guess PC coordinates. If a result says `ambiguous` or `no_match`, "
     "choose from its candidates or ask the user; if it says `stale_snapshot`, inspect again.\n"
     "8. To operate an app on the user's Android phone: call `inspect_phone_screen` to get a "
-    "phone snapshot with element ids (p1, p2, ...), labels, roles, and screen boxes. Use "
-    "`click_phone_element` or `type_into_phone_element` with an element_id from the latest phone "
-    "snapshot (the user approves every phone tap/type on their phone first), and use `scroll_phone` "
-    "(runs automatically) to scroll the phone screen. Each phone action returns an updated 'after' "
-    "phone snapshot.\n"
+    "phone snapshot with element ids (p1, p2, ...), labels, roles, and screen boxes, plus a "
+    "screenshot. Use `click_phone_element` or `type_into_phone_element` with an element_id from the "
+    "latest phone snapshot (the user approves every phone tap/type on their phone first), and use "
+    "`scroll_phone` (runs automatically) to scroll the phone screen. Each phone action returns an "
+    "updated 'after' phone snapshot.\n"
+    "8b. In the phone screenshot, every element that has an id is outlined with a thin magenta box "
+    "labelled with its pN id. Many apps (e.g. Obsidian, web views, games) expose some buttons or list "
+    "items only visually. If the target is visible in the screenshot but has NO pN box on it, do NOT "
+    "inspect the screen again: reading it again will not reveal new elements. Instead call "
+    "`tap_phone_point` with the target's `box_2d` [y1, x1, y2, x2] normalized to 0-1000 on the latest "
+    "screenshot (top-left origin, y first) and a short `label`. Prefer pN ids whenever they exist.\n"
     "9. All screen inspection requests (`inspect_pc_screen`, `capture_pc_screenshot`, "
     "`inspect_phone_screen`, `capture_phone_screenshot`) run immediately WITHOUT asking for "
     "user authorization and automatically return BOTH the live visual screenshot image AND the "
@@ -630,6 +647,50 @@ AGENT_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "tap_phone_point",
+            "description": (
+                "Tap something you can SEE in the latest phone screenshot that has no pN element id "
+                "(no magenta box), e.g. items in apps with poor accessibility labels. Give its bounding "
+                "box as box_2d [y1, x1, y2, x2] normalized to 0-1000 (top-left origin, y first). The "
+                "phone taps the box center after the user approves it. Optionally type text after the "
+                "tap. Returns a fresh 'after' phone snapshot."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "box_2d": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                        "description": "[y1, x1, y2, x2] of the target on the latest phone screenshot, each 0-1000.",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Short name of what you are tapping, e.g. 'Chapter 3 in file tree'.",
+                    },
+                    "long_press": {
+                        "type": "boolean",
+                        "description": "Long-press instead of a normal tap.",
+                        "default": False,
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Optional text to insert into the field that the tap focuses.",
+                    },
+                    "clear_first": {
+                        "type": "boolean",
+                        "description": "Replace existing text in the field instead of inserting at cursor.",
+                        "default": False,
+                    },
+                },
+                "required": ["box_2d", "label"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "capture_pc_screenshot",
             "description": (
                 "Capture BOTH a visual screenshot image and OCR element snapshot of the target "
@@ -763,6 +824,7 @@ class AgentSession:
     pending_images: list[ImageAttachment] = field(default_factory=list)
     pending_confirmation: PendingConfirmation | None = None
     screen_tainted: bool = False
+    consecutive_screen_reads: int = 0
     updated_at: float = field(default_factory=time.time)
 
 
@@ -779,6 +841,8 @@ class PreparedCall:
     early_output: dict[str, Any] | None = None
     # PC client that prepared the call (owns its snapshot); approvals are pinned to it.
     client_id: str | None = None
+    # False for early outputs that did not read the screen (keeps the latest snapshot in context).
+    marks_screen_read: bool = True
 
 
 @dataclass
@@ -1009,6 +1073,12 @@ def summarize_tool_call(tool_name: str, arguments: dict[str, Any]) -> str:
     if tool_name == "inspect_phone_screen":
         q = str(arguments.get("query", "")).strip()
         return f"View Phone Screen ('{q}')" if q else "View Phone Screen"
+    if tool_name == "tap_phone_point":
+        label = _shorten(str(arguments.get("label", "") or "target"), 40)
+        if str(arguments.get("text", "") or ""):
+            return f'Phone Type into "{label}" (visual)'
+        verb = "Long-press" if bool(arguments.get("long_press", False)) else "Tap"
+        return f'Phone {verb} "{label}" (visual)'
     if tool_name in CLICK_TOOLS:
         label = _click_target_label(arguments)
         prefix = "Phone " if tool_name in PHONE_CLICK_TOOLS else ""
@@ -1203,6 +1273,16 @@ def describe_click(tool_name: str, arguments: dict[str, Any], resolved: dict[str
         typed = _shorten(str(arguments.get("text", "")))
         return f'{verb} {label}{where} and type "{typed}"?'
     return f"{verb} {label}{where}?"
+
+
+def describe_point_tap(label: str, app_name: str, text: str = "", long_press: bool = False) -> str:
+    """Approval text shown on the phone before a visual (box_2d) tap."""
+    where = f" in {_shorten(app_name, 50)}" if app_name.strip() else ""
+    verb = "Long-press" if long_press else "Tap"
+    target = f'"{_shorten(label, 60)}"'
+    if text:
+        return f'{verb} {target}{where} (visual match) and type "{_shorten(text)}"?'
+    return f"{verb} {target}{where} (visual match)?"
 
 
 def build_click_execution_args(arguments: dict[str, Any], resolved: dict[str, Any]) -> dict[str, Any]:
@@ -1464,6 +1544,7 @@ class AgentEngine:
             ),
         )
         session.screen_tainted = False
+        session.consecutive_screen_reads = 0
         session.thinking_chunks.clear()
         session.tool_records.clear()
         session.android_actions.clear()
@@ -1631,7 +1712,8 @@ class AgentEngine:
             prepared = await self._prepare_tool_call(session, tool_name, arguments, client_id)
             if prepared.early_output is not None:
                 yield self._tool_calls_event(session)
-                self._note_screen_read(session, tool_name)
+                if prepared.marks_screen_read:
+                    self._note_screen_read(session, tool_name)
                 self._append_tool_message(session, tc_id, tool_name, prepared.early_output)
                 continue
             if prepared.needs_confirmation:
@@ -1701,7 +1783,8 @@ class AgentEngine:
             tc_id, tool_name, arguments = self._unpack_tool_call(tc)
             prepared = await self._prepare_tool_call(session, tool_name, arguments, client_id)
             if prepared.early_output is not None:
-                self._note_screen_read(session, tool_name)
+                if prepared.marks_screen_read:
+                    self._note_screen_read(session, tool_name)
                 self._append_tool_message(session, tc_id, tool_name, prepared.early_output)
                 continue
             if prepared.needs_confirmation:
@@ -1736,6 +1819,11 @@ class AgentEngine:
         client_id: str | None,
     ) -> PreparedCall:
         """Decides whether a call is gated; PC and phone click tools are resolved first."""
+        repeated = self._check_repeated_screen_read(session, tool_name, arguments)
+        if repeated is not None:
+            return repeated
+        if tool_name == "tap_phone_point":
+            return self._prepare_point_tap_call(session, arguments)
         if tool_name in PC_CLICK_TOOLS:
             return await self._prepare_click_call(session, tool_name, arguments, client_id)
         if tool_name in PHONE_CLICK_TOOLS:
@@ -1803,6 +1891,110 @@ class AgentEngine:
             auto_execute=True,
         )
 
+    @staticmethod
+    def _check_repeated_screen_read(
+        session: AgentSession,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> PreparedCall | None:
+        """Stops a third screen read in a row; any tool that acts resets the counter."""
+        if tool_name not in PASSIVE_TOOLS:
+            session.consecutive_screen_reads = 0
+            return None
+        if tool_name not in PASSIVE_SCREEN_TOOLS:
+            return None
+        if session.consecutive_screen_reads < MAX_CONSECUTIVE_SCREEN_READS:
+            session.consecutive_screen_reads += 1
+            return None
+        summary = summarize_tool_call(tool_name, arguments)
+        session.tool_records.append(
+            ToolCallRecord(tool=tool_name, status="skipped", summary=f"{summary} (skipped: already read)")
+        )
+        return PreparedCall(
+            arguments=arguments,
+            needs_confirmation=False,
+            marks_screen_read=False,
+            early_output={
+                "ok": False,
+                "repeated_screen_read": True,
+                "error": (
+                    f"You already read the screen {MAX_CONSECUTIVE_SCREEN_READS} times in a row without "
+                    "acting, and the latest screenshot and element list above are still current. "
+                    "Reading again will not reveal new elements. If the target is visible in the phone "
+                    "screenshot but has no pN id, call tap_phone_point with its box_2d. Otherwise act "
+                    "with an element id, scroll, or ask the user."
+                ),
+            },
+        )
+
+    @staticmethod
+    def _map_point_tap(screen: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
+        if not screen.get("accessibility_enabled", False):
+            return {
+                "ok": False,
+                "reason": "accessibility_disabled",
+                "message": (
+                    "LocalWhisper typing Accessibility service is disabled or no phone screen snapshot "
+                    "is available. Enable 'Type on this phone' in LocalWhisper settings."
+                ),
+            }
+        screen_w, screen_h = screen_size_from(screen)
+        return box_2d_to_screen_box(arguments.get("box_2d"), screen_w, screen_h)
+
+    def _prepare_point_tap_call(
+        self,
+        session: AgentSession,
+        arguments: dict[str, Any],
+    ) -> PreparedCall:
+        """Maps a visually located box_2d onto the phone screen and gates the tap for approval."""
+        tool_name = "tap_phone_point"
+        screen = session.phone_screen
+        mapped = self._map_point_tap(screen, arguments)
+        if not mapped.get("ok"):
+            summary = summarize_tool_call(tool_name, arguments)
+            reason = str(mapped.get("reason", "invalid"))
+            session.tool_records.append(
+                ToolCallRecord(tool=tool_name, status="error", summary=f"{summary} ({reason})")
+            )
+            return PreparedCall(
+                arguments=arguments,
+                needs_confirmation=False,
+                early_output={"ok": False, "result": mapped},
+            )
+
+        label = _shorten(str(arguments.get("label", "") or "").strip(), 60) or "target"
+        text = str(arguments.get("text", "") or "")
+        long_press = bool(arguments.get("long_press", False))
+        app_name = str(screen.get("app_name", "") or "")
+        phone_action = {
+            "action": "type" if text else "click",
+            "phone_snapshot_id": str(screen.get("phone_snapshot_id", "") or ""),
+            "element_id": "",
+            "display_text": label,
+            "window_title": app_name,
+            "x": int(mapped["x"]),
+            "y": int(mapped["y"]),
+            "box": mapped["box"],
+            "long_press": long_press,
+            "text": text,
+            "clear_first": bool(arguments.get("clear_first", False)),
+        }
+        exec_args: dict[str, Any] = {
+            "box_2d": mapped["box_2d"],
+            "label": label,
+            "x": int(mapped["x"]),
+            "y": int(mapped["y"]),
+            "long_press": long_press,
+        }
+        if text:
+            exec_args["text"] = text
+        return PreparedCall(
+            arguments=exec_args,
+            needs_confirmation=True,
+            description=describe_point_tap(label, app_name, text, long_press),
+            phone_action=phone_action,
+        )
+
     def _prepare_phone_click_call(
         self,
         session: AgentSession,
@@ -1826,6 +2018,7 @@ class AgentEngine:
         action_type = "type" if tool_name == "type_into_phone_element" else "click"
         phone_action = {
             "action": action_type,
+            "phone_snapshot_id": str(resolved.get("phone_snapshot_id", "")),
             "element_id": str(resolved.get("element_id", "")),
             "display_text": str(resolved.get("display_text", "")),
             "window_title": str(resolved.get("window_title", "")),
@@ -1863,6 +2056,7 @@ class AgentEngine:
                 box = resolved.get("box")
         phone_action = {
             "action": "scroll",
+            "phone_snapshot_id": str(session.phone_screen.get("phone_snapshot_id", "") or ""),
             "direction": direction,
             "element_id": element_id,
             "x": x,

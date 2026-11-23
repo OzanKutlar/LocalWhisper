@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import difflib
+import json
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,6 +17,7 @@ MAX_FUZZY_SCORE = 0.89
 MIN_CANDIDATE_SCORE = 0.3
 MAX_CANDIDATES = 5
 MAX_WORDS_SCANNED = 40
+BOX_2D_SCALE = 1000.0
 
 
 @dataclass(frozen=True)
@@ -384,3 +387,88 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def screen_size_from(screen: dict[str, Any] | None) -> tuple[int, int]:
+    """Physical phone screen size reported in a phone snapshot, or (0, 0) when unknown."""
+    if not isinstance(screen, dict):
+        return 0, 0
+    width = _optional_int(screen.get("screen_width"))
+    height = _optional_int(screen.get("screen_height"))
+    if width is None or height is None or width <= 0 or height <= 0:
+        return 0, 0
+    return width, height
+
+
+def parse_box_2d(raw_box: Any) -> tuple[float, float, float, float] | None:
+    """Parses a Gemma-style box_2d [y1, x1, y2, x2] in 0-1000 units; None when malformed."""
+    value = raw_box
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(value, dict):
+        value = value.get("box_2d")
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    numbers: list[float] = []
+    for item in value:
+        number = _box_number(item)
+        if number is None:
+            return None
+        numbers.append(number)
+    return numbers[0], numbers[1], numbers[2], numbers[3]
+
+
+def _box_number(item: Any) -> float | None:
+    if isinstance(item, bool):
+        return None
+    try:
+        number = float(item)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0.0 or number > BOX_2D_SCALE:
+        return None
+    return number
+
+
+def _scale_to_pixels(value: float, size: int) -> int:
+    return max(0, min(int(round(value / BOX_2D_SCALE * size)), size - 1))
+
+
+def box_2d_to_screen_box(raw_box: Any, screen_w: int, screen_h: int) -> dict[str, Any]:
+    """Maps a normalized box_2d [y1, x1, y2, x2] onto the phone screen; taps go to the box center."""
+    if screen_w <= 0 or screen_h <= 0:
+        return {
+            "ok": False,
+            "reason": "no_screen_size",
+            "message": "The phone did not report its screen size. Call capture_phone_screenshot first.",
+        }
+    parsed = parse_box_2d(raw_box)
+    if parsed is None:
+        return {
+            "ok": False,
+            "reason": "bad_box",
+            "message": "box_2d must be four numbers [y1, x1, y2, x2] between 0 and 1000.",
+        }
+    y1, x1, y2, x2 = parsed
+    top, bottom = min(y1, y2), max(y1, y2)
+    left, right = min(x1, x2), max(x1, x2)
+    if bottom <= top or right <= left:
+        return {
+            "ok": False,
+            "reason": "empty_box",
+            "message": "box_2d has zero width or height. Give the full box around the target.",
+        }
+    px_left = _scale_to_pixels(left, screen_w)
+    px_top = _scale_to_pixels(top, screen_h)
+    width = max(1, _scale_to_pixels(right, screen_w) - px_left)
+    height = max(1, _scale_to_pixels(bottom, screen_h) - px_top)
+    return {
+        "ok": True,
+        "x": min(px_left + width // 2, screen_w - 1),
+        "y": min(px_top + height // 2, screen_h - 1),
+        "box": {"x": px_left, "y": px_top, "w": width, "h": height},
+        "box_2d": [int(round(top)), int(round(left)), int(round(bottom)), int(round(right))],
+    }

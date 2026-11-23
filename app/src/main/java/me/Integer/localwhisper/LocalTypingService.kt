@@ -16,6 +16,7 @@ import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import android.view.Display
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -86,7 +87,7 @@ class LocalTypingService : AccessibilityService() {
         val root = rootInActiveWindow ?: return
         if (root.packageName?.toString() == packageName) return
         lastExternalCaptureUptimeMs = now
-        cachedExternalSnapshot = buildWindowSnapshot(root)
+        cachedExternalSnapshot = buildWindowSnapshot(root, rememberNodes = false)
         if (now - lastScreenshotUptimeMs >= SCREENSHOT_THROTTLE_MS) {
             lastScreenshotUptimeMs = now
             captureUnderlyingScreenshotAsync()
@@ -119,7 +120,7 @@ class LocalTypingService : AccessibilityService() {
         serviceScope = null
         handler.removeCallbacks(attemptRunnable)
         pendingText = null
-        cachedNodesById = emptyMap()
+        clearNodeMaps()
     }
 
     // ------------------------------------------------------------ Scheduling
@@ -276,7 +277,7 @@ class LocalTypingService : AccessibilityService() {
         return try {
             val externalRoot = findUnderlyingAppRoot()
             if (externalRoot != null) {
-                val fresh = buildWindowSnapshot(externalRoot)
+                val fresh = buildWindowSnapshot(externalRoot, rememberNodes = true)
                 cachedExternalSnapshot = fresh
                 fresh
             } else {
@@ -314,98 +315,173 @@ class LocalTypingService : AccessibilityService() {
         return null
     }
 
-    private fun buildWindowSnapshot(root: AccessibilityNodeInfo): JSONObject {
+    private class ElementCandidate(
+        val node: AccessibilityNodeInfo,
+        val json: JSONObject,
+        val priority: Int,
+        val left: Int,
+        val top: Int,
+        val order: Int
+    )
+
+    /**
+     * Builds a p1..pN snapshot. Only snapshots sent to the server ([rememberNodes]) scan deeply
+     * and keep their node map, so background event snapshots never change what an id points at.
+     */
+    private fun buildWindowSnapshot(root: AccessibilityNodeInfo, rememberNodes: Boolean): JSONObject {
         val snapshotId = "ps${snapshotCounter.incrementAndGet()}"
         val pkgName = root.packageName?.toString().orEmpty()
-        val appLabel = resolveAppLabel(pkgName)
         val visibleTexts = JSONArray()
+        val scanLimit = if (rememberNodes) MAX_SCREEN_NODES_SCANNED else BACKGROUND_NODES_SCANNED
+        val chosen = selectElements(collectElementCandidates(root, visibleTexts, scanLimit))
         val uiElements = JSONArray()
-        val seenTexts = HashSet<String>()
         val nodeMap = HashMap<String, AccessibilityNodeInfo>()
-
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
-        var scanned = 0
-        val boundsRect = Rect()
-
-        while (queue.isNotEmpty() && scanned < MAX_SCREEN_NODES_SCANNED) {
-            val node = queue.removeFirst()
-            scanned++
-            if (!node.isVisibleToUser) continue
-
-            val rawText = if (node.isPassword) "" else node.text?.toString()?.trim().orEmpty()
-            val desc = node.contentDescription?.toString()?.trim().orEmpty()
-            val hint = node.hintText?.toString()?.trim().orEmpty()
-            val viewId = node.viewIdResourceName?.substringAfterLast('/')?.trim().orEmpty()
-            val role = node.className?.toString()?.substringAfterLast('.')?.trim().orEmpty()
-
-            if (rawText.isNotEmpty() && seenTexts.add(rawText)) {
-                visibleTexts.put(rawText)
-            } else if (desc.isNotEmpty() && seenTexts.add(desc)) {
-                visibleTexts.put(desc)
-            }
-
-            val isInteresting = rawText.isNotEmpty() || desc.isNotEmpty() || hint.isNotEmpty() ||
-                node.isEditable || node.isClickable || node.isScrollable
-            if (isInteresting && uiElements.length() < MAX_UI_ELEMENTS_RETURNED) {
-                node.getBoundsInScreen(boundsRect)
-                if (boundsRect.width() > 0 && boundsRect.height() > 0) {
-                    val elementId = "p${uiElements.length() + 1}"
-                    nodeMap[elementId] = node
-                    uiElements.put(
-                        JSONObject().apply {
-                            put("element_id", elementId)
-                            put("role", role)
-                            if (rawText.isNotEmpty()) put("text", rawText)
-                            if (desc.isNotEmpty()) put("content_desc", desc)
-                            if (hint.isNotEmpty()) put("hint", hint)
-                            if (viewId.isNotEmpty()) put("view_id", viewId)
-                            put("clickable", node.isClickable)
-                            put("editable", node.isEditable)
-                            put("scrollable", node.isScrollable)
-                            put("focused", node.isFocused || node.isAccessibilityFocused)
-                            put(
-                                "bounds",
-                                JSONObject().apply {
-                                    put("left", boundsRect.left)
-                                    put("top", boundsRect.top)
-                                    put("right", boundsRect.right)
-                                    put("bottom", boundsRect.bottom)
-                                }
-                            )
-                        }
-                    )
-                }
-            }
-
-            val childCount = minOf(node.childCount, MAX_CHILDREN_PER_NODE)
-            for (i in 0 until childCount) {
-                node.getChild(i)?.let { queue.add(it) }
-            }
+        for ((index, candidate) in chosen.withIndex()) {
+            val elementId = "p${index + 1}"
+            candidate.json.put("element_id", elementId)
+            uiElements.put(candidate.json)
+            nodeMap[elementId] = candidate.node
         }
-
-        cachedNodesById = nodeMap
-
-        val focusedField = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-        val focusedJson = if (focusedField != null) {
-            JSONObject().apply {
-                put("editable", focusedField.isEditable)
-                put("text", if (focusedField.isPassword) "" else currentRealText(focusedField))
-                put("hint", focusedField.hintText?.toString().orEmpty())
-            }
-        } else null
-
+        if (rememberNodes) {
+            rememberNodeMap(snapshotId, nodeMap)
+        }
+        val (screenWidth, screenHeight) = screenSize()
+        val focusedJson = focusedInputJson(root)
         return JSONObject().apply {
             put("accessibility_enabled", true)
             put("phone_snapshot_id", snapshotId)
             put("package_name", pkgName)
-            put("app_name", appLabel)
+            put("app_name", resolveAppLabel(pkgName))
             put("captured_at_ms", System.currentTimeMillis())
+            put("screen_width", screenWidth)
+            put("screen_height", screenHeight)
             if (focusedJson != null) {
                 put("focused_input", focusedJson)
             }
             put("visible_texts", visibleTexts)
             put("ui_elements", uiElements)
+        }
+    }
+
+    /** Breadth-first scan of visible nodes, bounded by [scanLimit] nodes and [MAX_ELEMENT_CANDIDATES]. */
+    private fun collectElementCandidates(
+        root: AccessibilityNodeInfo,
+        visibleTexts: JSONArray,
+        scanLimit: Int
+    ): List<ElementCandidate> {
+        val candidates = ArrayList<ElementCandidate>()
+        val seenTexts = HashSet<String>()
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var scanned = 0
+        while (queue.isNotEmpty() && scanned < scanLimit) {
+            val node = queue.removeFirst()
+            scanned++
+            if (!node.isVisibleToUser) continue
+            if (candidates.size < MAX_ELEMENT_CANDIDATES) {
+                describeNode(node, candidates.size, visibleTexts, seenTexts)?.let { candidates.add(it) }
+            }
+            enqueueChildren(node, queue, scanLimit - scanned)
+        }
+        return candidates
+    }
+
+    /** Queues children only while they can still be scanned, so no child is fetched for nothing. */
+    private fun enqueueChildren(
+        node: AccessibilityNodeInfo,
+        queue: ArrayDeque<AccessibilityNodeInfo>,
+        remainingBudget: Int
+    ) {
+        val childCount = minOf(node.childCount, MAX_CHILDREN_PER_NODE)
+        for (i in 0 until childCount) {
+            if (queue.size >= remainingBudget) return
+            node.getChild(i)?.let { queue.add(it) }
+        }
+    }
+
+    private fun describeNode(
+        node: AccessibilityNodeInfo,
+        order: Int,
+        visibleTexts: JSONArray,
+        seenTexts: MutableSet<String>
+    ): ElementCandidate? {
+        val rawText = if (node.isPassword) "" else node.text?.toString()?.trim().orEmpty()
+        val desc = node.contentDescription?.toString()?.trim().orEmpty()
+        val hint = node.hintText?.toString()?.trim().orEmpty()
+        recordVisibleText(rawText.ifEmpty { desc }, visibleTexts, seenTexts)
+        val interactive = node.isEditable || node.isClickable || node.isScrollable
+        val labeled = rawText.isNotEmpty() || desc.isNotEmpty() || hint.isNotEmpty()
+        if (!interactive && !labeled) return null
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        if (bounds.width() <= 0 || bounds.height() <= 0) return null
+        val viewId = node.viewIdResourceName?.substringAfterLast('/')?.trim().orEmpty()
+        val json = JSONObject().apply {
+            put("role", node.className?.toString()?.substringAfterLast('.')?.trim().orEmpty())
+            if (rawText.isNotEmpty()) put("text", rawText)
+            if (desc.isNotEmpty()) put("content_desc", desc)
+            if (hint.isNotEmpty()) put("hint", hint)
+            if (viewId.isNotEmpty()) put("view_id", viewId)
+            put("clickable", node.isClickable)
+            put("editable", node.isEditable)
+            put("scrollable", node.isScrollable)
+            put("focused", node.isFocused || node.isAccessibilityFocused)
+            put(
+                "bounds",
+                JSONObject().apply {
+                    put("left", bounds.left)
+                    put("top", bounds.top)
+                    put("right", bounds.right)
+                    put("bottom", bounds.bottom)
+                }
+            )
+        }
+        val priority = when {
+            interactive && labeled -> 3
+            interactive -> 2
+            else -> 1
+        }
+        return ElementCandidate(node, json, priority, bounds.left, bounds.top, order)
+    }
+
+    private fun recordVisibleText(text: String, visibleTexts: JSONArray, seenTexts: MutableSet<String>) {
+        if (text.isEmpty() || visibleTexts.length() >= MAX_VISIBLE_TEXTS) return
+        if (seenTexts.add(text)) {
+            visibleTexts.put(text)
+        }
+    }
+
+    /** Keeps the most useful elements (labelled and interactive first), then orders them top to bottom. */
+    private fun selectElements(candidates: List<ElementCandidate>): List<ElementCandidate> {
+        return candidates
+            .sortedWith(compareByDescending<ElementCandidate> { it.priority }.thenBy { it.order })
+            .take(MAX_UI_ELEMENTS_RETURNED)
+            .sortedWith(compareBy<ElementCandidate> { it.top }.thenBy { it.left })
+    }
+
+    private fun focusedInputJson(root: AccessibilityNodeInfo): JSONObject? {
+        val focusedField = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return null
+        return JSONObject().apply {
+            put("editable", focusedField.isEditable)
+            put("text", if (focusedField.isPassword) "" else currentRealText(focusedField))
+            put("hint", focusedField.hintText?.toString().orEmpty())
+        }
+    }
+
+    /** Full display size in pixels; accessibility bounds and screenshots share this space. */
+    private fun screenSize(): Pair<Int, Int> {
+        val metrics = resources.displayMetrics
+        val fallback = metrics.widthPixels to metrics.heightPixels
+        return try {
+            val bounds = getSystemService(WindowManager::class.java)?.currentWindowMetrics?.bounds
+            if (bounds != null && bounds.width() > 0 && bounds.height() > 0) {
+                bounds.width() to bounds.height()
+            } else {
+                fallback
+            }
+        } catch (exc: Exception) {
+            Log.w(TAG, "Could not read window metrics; using display metrics", exc)
+            fallback
         }
     }
 
@@ -540,6 +616,66 @@ class LocalTypingService : AccessibilityService() {
         return null
     }
 
+    /** Paints for the pN boxes drawn on screenshots sent to the model, scaled to the image width. */
+    private class MarkPaints(widthScale: Float) {
+        val box = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = MARK_COLOR
+            style = Paint.Style.STROKE
+            strokeWidth = (MARK_STROKE_PX * widthScale).coerceAtLeast(1f)
+        }
+        val labelBackground = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = MARK_COLOR
+            style = Paint.Style.FILL
+        }
+        val labelText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = (MARK_TEXT_PX * widthScale).coerceAtLeast(10f)
+            isFakeBoldText = true
+        }
+    }
+
+    /**
+     * Copy of [source] with a labelled box around every snapshot element, so the model can tell
+     * which visible items have pN ids. Never mutates [source] (it may be the shared cached shot).
+     */
+    private fun drawElementMarks(source: Bitmap, snapshot: JSONObject): Bitmap? {
+        val elements = snapshot.optJSONArray("ui_elements") ?: return null
+        val screenWidth = snapshot.optInt("screen_width", 0)
+        if (elements.length() == 0 || screenWidth <= 0 || source.width <= 0) return null
+        val marked = try {
+            source.copy(Bitmap.Config.ARGB_8888, true)
+        } catch (exc: Exception) {
+            Log.w(TAG, "Could not copy screenshot for element marks", exc)
+            null
+        } ?: return null
+        val scale = marked.width.toFloat() / screenWidth.toFloat()
+        val paints = MarkPaints(marked.width / MARK_REFERENCE_WIDTH)
+        val canvas = Canvas(marked)
+        val count = minOf(elements.length(), MAX_UI_ELEMENTS_RETURNED)
+        for (index in 0 until count) {
+            elements.optJSONObject(index)?.let { drawElementMark(canvas, it, scale, paints) }
+        }
+        return marked
+    }
+
+    private fun drawElementMark(canvas: Canvas, element: JSONObject, scale: Float, paints: MarkPaints) {
+        val bounds = element.optJSONObject("bounds") ?: return
+        val left = bounds.optInt("left", 0) * scale
+        val top = bounds.optInt("top", 0) * scale
+        val right = bounds.optInt("right", 0) * scale
+        val bottom = bounds.optInt("bottom", 0) * scale
+        if (right <= left || bottom <= top) return
+        canvas.drawRect(left, top, right, bottom, paints.box)
+        val label = element.optString("element_id", "")
+        if (label.isEmpty()) return
+        val text = paints.labelText
+        val pad = text.textSize * 0.15f
+        val labelRight = left + text.measureText(label) + pad * 2
+        val labelBottom = top + text.textSize + pad * 2
+        canvas.drawRect(left, top, labelRight, labelBottom, paints.labelBackground)
+        canvas.drawText(label, left + pad, top + pad - text.ascent(), text)
+    }
+
     private suspend fun capturePhoneScreenshotAction(actionJson: JSONObject): JSONObject {
         val actionName = actionJson.optString("action", "capture_screen")
         val maxWidth = actionJson.optInt("max_width", CAPTURE_DEFAULT_MAX_WIDTH)
@@ -547,7 +683,17 @@ class LocalTypingService : AccessibilityService() {
         val snapshot = captureBestSnapshot()
         val appName = snapshot?.optString("app_name", "").orEmpty()
         val bitmap = runWithOverlayHidden(alwaysHide = true) { captureScreenshotWithRetry() }
-        val encoded = if (bitmap != null) encodeBitmapToJpeg(bitmap, maxWidth) else null
+        val marked = if (bitmap != null && snapshot != null) drawElementMarks(bitmap, snapshot) else null
+        val marksDrawn = marked != null
+        val encoded = try {
+            when {
+                marked != null -> encodeBitmapToJpeg(marked, maxWidth)
+                bitmap != null -> encodeBitmapToJpeg(bitmap, maxWidth)
+                else -> null
+            }
+        } finally {
+            marked?.recycle()
+        }
         if (encoded == null) {
             return JSONObject().apply {
                 put("ok", snapshot != null)
@@ -564,6 +710,7 @@ class LocalTypingService : AccessibilityService() {
             put("mime_type", "image/jpeg")
             put("width", encoded.width)
             put("height", encoded.height)
+            put("element_marks_drawn", marksDrawn)
             if (appName.isNotBlank()) put("app_name", appName)
         }
     }
@@ -581,7 +728,11 @@ class LocalTypingService : AccessibilityService() {
         val clearFirst = actionJson.optBoolean("clear_first", false)
         val direction = actionJson.optString("direction", "down").lowercase()
 
-        val node = if (elementId.isNotEmpty()) cachedNodesById[elementId] else null
+        val snapshotId = actionJson.optString("phone_snapshot_id", "").trim()
+        val node = findCachedNode(snapshotId, elementId)
+        if (elementId.isNotEmpty() && node == null) {
+            Log.d(TAG, "No cached node for $elementId in snapshot '$snapshotId'; using tap coordinates")
+        }
         val ok = when (action) {
             "click" -> performClickOnPhone(node, x, y, longPress)
             "type" -> performTypeOnPhone(node, x, y, text, clearFirst)
@@ -777,9 +928,17 @@ class LocalTypingService : AccessibilityService() {
         private const val SNAPSHOT_THROTTLE_MS = 400L
         private const val SCREENSHOT_THROTTLE_MS = 1800L
         private const val PHONE_ACTION_SETTLE_MS = 350L
-        private const val MAX_SCREEN_NODES_SCANNED = 140
-        private const val MAX_UI_ELEMENTS_RETURNED = 85
-        private const val MAX_CHILDREN_PER_NODE = 20
+        private const val MAX_SCREEN_NODES_SCANNED = 600
+        private const val BACKGROUND_NODES_SCANNED = 140
+        private const val MAX_ELEMENT_CANDIDATES = 400
+        private const val MAX_UI_ELEMENTS_RETURNED = 100
+        private const val MAX_VISIBLE_TEXTS = 200
+        private const val MAX_CHILDREN_PER_NODE = 60
+        private const val MAX_NODE_MAPS = 6
+        private const val MARK_COLOR = 0xFFE91E8C.toInt()
+        private const val MARK_STROKE_PX = 3f
+        private const val MARK_TEXT_PX = 26f
+        private const val MARK_REFERENCE_WIDTH = 1080f
         private const val PREVIEW_MAX_WIDTH = 720
         private const val SCREENSHOT_RETRY_DELAY_MS = 1050L
         private const val CAPTURE_DEFAULT_MAX_WIDTH = 1080
@@ -798,8 +957,41 @@ class LocalTypingService : AccessibilityService() {
         @Volatile
         private var cachedExternalSnapshot: JSONObject? = null
 
-        @Volatile
-        private var cachedNodesById: Map<String, AccessibilityNodeInfo> = emptyMap()
+        private val nodeMapsLock = Any()
+
+        /** Node maps of recent snapshots sent to the server, oldest first, keyed by phone_snapshot_id. */
+        private val nodeMapsBySnapshot = LinkedHashMap<String, Map<String, AccessibilityNodeInfo>>()
+
+        private fun rememberNodeMap(snapshotId: String, nodes: Map<String, AccessibilityNodeInfo>) {
+            synchronized(nodeMapsLock) {
+                nodeMapsBySnapshot.remove(snapshotId)
+                nodeMapsBySnapshot[snapshotId] = nodes
+                val excess = (nodeMapsBySnapshot.size - MAX_NODE_MAPS).coerceAtLeast(0)
+                val oldest = nodeMapsBySnapshot.keys.take(excess)
+                for (key in oldest) {
+                    nodeMapsBySnapshot.remove(key)
+                }
+            }
+        }
+
+        /** Node for [elementId] in the snapshot it was resolved against; newest snapshot when no id was sent. */
+        private fun findCachedNode(snapshotId: String, elementId: String): AccessibilityNodeInfo? {
+            if (elementId.isEmpty()) return null
+            synchronized(nodeMapsLock) {
+                val nodes = if (snapshotId.isNotEmpty()) {
+                    nodeMapsBySnapshot[snapshotId]
+                } else {
+                    nodeMapsBySnapshot.values.lastOrNull()
+                }
+                return nodes?.get(elementId)
+            }
+        }
+
+        private fun clearNodeMaps() {
+            synchronized(nodeMapsLock) {
+                nodeMapsBySnapshot.clear()
+            }
+        }
 
         @Volatile
         private var cachedUnderlyingScreenshot: Bitmap? = null

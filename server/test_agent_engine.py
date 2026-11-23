@@ -844,6 +844,7 @@ class MultimodalImageTests(unittest.IsolatedAsyncioTestCase):
         scripted = [
             tool_message("capture_pc_screenshot", "{}", "c1"),
             tool_message("capture_pc_screenshot", "{}", "c2"),
+            tool_message("scroll_pc", '{"direction": "down"}', "c_scroll"),
             tool_message("capture_pc_screenshot", "{}", "c3"),
             {"role": "assistant", "content": "Looked 3 times."},
         ]
@@ -945,6 +946,125 @@ class ConfirmationClientPinningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed.status, "completed")
         self.assertEqual([name for name, _ in hub.calls], ["prepare_click", "click_screen_element"])
         self.assertEqual(hub.client_ids[-1], "pc01")
+
+
+TAP_CHAPTER_ARGS = '{"box_2d": [100, 200, 300, 400], "label": "Chapter 3"}'
+
+
+class PointTapAndLoopGuardTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.phone_screen = {
+            "accessibility_enabled": True,
+            "phone_snapshot_id": "ps9",
+            "app_name": "Obsidian",
+            "package_name": "md.obsidian",
+            "screen_width": 1080,
+            "screen_height": 2400,
+            "ui_elements": [
+                {
+                    "element_id": "p1",
+                    "role": "Button",
+                    "content_desc": "Open sidebar",
+                    "clickable": True,
+                    "bounds": {"left": 0, "top": 100, "right": 120, "bottom": 220},
+                }
+            ],
+        }
+
+    async def test_point_tap_is_gated_and_mapped_to_screen_pixels(self) -> None:
+        hub = FakeClientHub()
+        scripted = [
+            tool_message("tap_phone_point", TAP_CHAPTER_ARGS),
+            {"role": "assistant", "content": "Opened Chapter 3."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        first = await engine.run_turn("Open chapter 3 in Obsidian", phone_screen=self.phone_screen)
+
+        self.assertEqual(first.status, "confirmation_required")
+        pending = first.pending_confirmation
+        self.assertFalse(pending["auto_execute"])
+        self.assertIn("Chapter 3", pending["description"])
+        action = pending["phone_action"]
+        self.assertEqual(action["action"], "click")
+        self.assertEqual((action["x"], action["y"]), (324, 480))
+        self.assertEqual(action["box"], {"x": 216, "y": 240, "w": 216, "h": 480})
+        self.assertEqual(action["phone_snapshot_id"], "ps9")
+        self.assertEqual(action["element_id"], "")
+
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=pending["confirmation_id"],
+            approved=True,
+            phone_screen=self.phone_screen,
+            phone_action_result={"ok": True, "action": "click"},
+        )
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual([c["status"] for c in resumed.tool_calls], ["ok"])
+        self.assertEqual(hub.calls, [])
+
+    async def test_point_tap_with_text_becomes_type_action(self) -> None:
+        args = '{"box_2d": [100, 200, 300, 400], "label": "Search", "text": "Chapter"}'
+        engine = FakeAgentEngine(FakeClientHub(), [tool_message("tap_phone_point", args)])
+        first = await engine.run_turn("Search for chapter", phone_screen=self.phone_screen)
+        action = first.pending_confirmation["phone_action"]
+        self.assertEqual(action["action"], "type")
+        self.assertEqual(action["text"], "Chapter")
+
+    async def test_point_tap_without_screen_size_errors_without_gate(self) -> None:
+        screen = {
+            key: value
+            for key, value in self.phone_screen.items()
+            if key not in ("screen_width", "screen_height")
+        }
+        scripted = [
+            tool_message("tap_phone_point", TAP_CHAPTER_ARGS),
+            {"role": "assistant", "content": "I need a screenshot first."},
+        ]
+        engine = FakeAgentEngine(FakeClientHub(), scripted)
+        result = await engine.run_turn("Open chapter 3", phone_screen=screen)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.tool_calls[0]["status"], "error")
+        self.assertIn("no_screen_size", result.tool_calls[0]["summary"])
+
+    async def test_phone_element_click_carries_snapshot_id(self) -> None:
+        engine = FakeAgentEngine(
+            FakeClientHub(), [tool_message("click_phone_element", '{"element_id": "p1"}')]
+        )
+        first = await engine.run_turn("Open the sidebar", phone_screen=self.phone_screen)
+        self.assertEqual(first.pending_confirmation["phone_action"]["phone_snapshot_id"], "ps9")
+
+    async def test_third_screen_read_in_a_row_is_skipped(self) -> None:
+        hub = ScriptedClientHub({})
+        scripted = [
+            tool_message("inspect_pc_screen", "{}", "r1"),
+            tool_message("inspect_pc_screen", "{}", "r2"),
+            tool_message("inspect_pc_screen", "{}", "r3"),
+            {"role": "assistant", "content": "I need your help finding it."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        result = await engine.run_turn("Find the chapter button")
+
+        self.assertEqual([name for name, _ in hub.calls], ["inspect_pc_screen", "inspect_pc_screen"])
+        self.assertEqual([c["status"] for c in result.tool_calls], ["ok", "ok", "skipped"])
+        session = engine._sessions[result.session_id]
+        tool_contents = [m["content"] for m in session.messages if m.get("role") == "tool"]
+        self.assertIn("repeated_screen_read", tool_contents[-1])
+
+    async def test_acting_resets_the_screen_read_counter(self) -> None:
+        hub = ScriptedClientHub({})
+        scripted = [
+            tool_message("inspect_pc_screen", "{}", "r1"),
+            tool_message("inspect_pc_screen", "{}", "r2"),
+            tool_message("scroll_pc", '{"direction": "down"}', "s1"),
+            tool_message("inspect_pc_screen", "{}", "r3"),
+            {"role": "assistant", "content": "Found it."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        await engine.run_turn("Scroll and look")
+        self.assertEqual(
+            [name for name, _ in hub.calls],
+            ["inspect_pc_screen", "inspect_pc_screen", "scroll_pc", "inspect_pc_screen"],
+        )
 
 
 if __name__ == "__main__":
