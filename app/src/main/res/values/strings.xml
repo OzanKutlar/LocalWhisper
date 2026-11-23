@@ -76,6 +76,7 @@
     <string name="assistant_state_typing">Type a message</string>
     <string name="assistant_state_sending">Sending…</string>
     <string name="assistant_state_thinking">Thinking…</string>
+    <string name="assistant_state_paused">Paused</string>
     <string name="assistant_state_agent_result">Agent response</string>
     <string name="assistant_state_confirm">Confirm action</string>
     <string name="assistant_state_sent">Sent</string>
@@ -84,6 +85,7 @@
     <!-- Voice overlay: subtitle and target -->
     <string name="assistant_model_hint">Running Qwen3-ASR-1.7B on CUDA…</string>
     <string name="assistant_agent_thinking_hint">Reasoning &amp; calling tools…</string>
+    <string name="assistant_agent_paused_hint">Tap resume to continue or stop to cancel</string>
     <string name="assistant_target_format">Target: %1$s</string>
     <string name="assistant_agent_target_format">Agent → %1$s</string>
     <string name="assistant_target_loading">Looking for PC clients…</string>
@@ -115,6 +117,19 @@
     <string name="assistant_confirm_preview_desc">Screenshot of the PC window with the click target outlined. Tap to enlarge.</string>
     <string name="assistant_follow_up_voice_desc">Ask a voice follow-up</string>
     <string name="assistant_follow_up_keyboard_desc">Type a follow-up</string>
+    <string name="assistant_pause_desc">Pause</string>
+    <string name="assistant_resume_desc">Resume</string>
+    <string name="assistant_stop_agent_desc">Stop agent</string>
+    <string name="assistant_minimize_desc">Minimize to corner</string>
+    <string name="overlay_pill_thinking">Agent working…</string>
+    <string name="overlay_pill_paused">Paused</string>
+    <string name="overlay_pill_confirm">Confirm action</string>
+    <string name="overlay_pill_done">Done · tap to view</string>
+    <string name="overlay_pill_error">Error · tap to view</string>
+    <string name="overlay_action_resume">Resume</string>
+    <string name="overlay_action_open">Open</string>
+    <string name="overlay_action_stop">Stop</string>
+    <string name="overlay_action_dismiss">Dismiss</string>
     <string name="assistant_session_new">New session (tap to switch)</string>
     <string name="assistant_session_continuing_format">Session: %1$s (%2$d)</string>
     <string name="assistant_session_new_button">+ New</string>

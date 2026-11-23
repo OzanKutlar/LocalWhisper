@@ -1,6 +1,9 @@
 package me.Integer.localwhisper
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -423,8 +426,14 @@ class LocalWhisperApi {
         initialTimeline: List<TimelineEntry>,
         onProgress: suspend (AgentStreamProgress) -> Unit
     ): Result<AgentResponse> {
+        val call = httpClient.newCall(request)
+        val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
+            if (cause is CancellationException) {
+                call.cancel()
+            }
+        }
         return try {
-            httpClient.newCall(request).execute().use { response ->
+            call.execute().use { response ->
                 if (!response.isSuccessful) {
                     val bodyText = response.body?.string().orEmpty()
                     return Result.failure(IOException(extractErrorDetail(bodyText, response.code)))
@@ -456,8 +465,12 @@ class LocalWhisperApi {
                     Result.failure(IOException("Agent stream ended without a completion result"))
                 }
             }
+        } catch (exc: CancellationException) {
+            throw exc
         } catch (exc: Exception) {
             Result.failure(exc)
+        } finally {
+            cancelHandle?.dispose()
         }
     }
 
@@ -587,12 +600,18 @@ class LocalWhisperApi {
         )
     }
 
-    private fun <T> executeJsonRequest(
+    private suspend fun <T> executeJsonRequest(
         request: Request,
         parser: (JSONObject) -> T
     ): Result<T> {
+        val call = httpClient.newCall(request)
+        val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
+            if (cause is CancellationException) {
+                call.cancel()
+            }
+        }
         return try {
-            httpClient.newCall(request).execute().use { response ->
+            call.execute().use { response ->
                 val bodyText = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     val detail = extractErrorDetail(bodyText, response.code)
@@ -601,8 +620,12 @@ class LocalWhisperApi {
                 val json = JSONObject(bodyText)
                 Result.success(parser(json))
             }
+        } catch (exc: CancellationException) {
+            throw exc
         } catch (exc: Exception) {
             Result.failure(exc)
+        } finally {
+            cancelHandle?.dispose()
         }
     }
 

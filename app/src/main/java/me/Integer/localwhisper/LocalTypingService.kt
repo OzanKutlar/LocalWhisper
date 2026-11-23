@@ -21,7 +21,13 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
 import androidx.annotation.StringRes
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONArray
 import org.json.JSONObject
@@ -46,10 +52,30 @@ class LocalTypingService : AccessibilityService() {
     private var attemptsLeft = 0
     private var lastExternalCaptureUptimeMs = 0L
     private var lastScreenshotUptimeMs = 0L
+    private var serviceScope: CoroutineScope? = null
+    private var overlayObserverJob: Job? = null
+    private var overlayController: AgentOverlayController? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        AgentRuntimeManager.init(applicationContext)
+        attachAgentOverlay()
+    }
+
+    private fun attachAgentOverlay() {
+        overlayObserverJob?.cancel()
+        overlayController?.destroy()
+        serviceScope?.cancel()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val controller = AgentOverlayController(this)
+        serviceScope = scope
+        overlayController = controller
+        overlayObserverJob = scope.launch {
+            AgentRuntimeManager.state.collect { state ->
+                controller.render(state)
+            }
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -85,6 +111,12 @@ class LocalTypingService : AccessibilityService() {
         if (instance === this) {
             instance = null
         }
+        overlayObserverJob?.cancel()
+        overlayObserverJob = null
+        overlayController?.destroy()
+        overlayController = null
+        serviceScope?.cancel()
+        serviceScope = null
         handler.removeCallbacks(attemptRunnable)
         pendingText = null
         cachedNodesById = emptyMap()
@@ -511,7 +543,7 @@ class LocalTypingService : AccessibilityService() {
     private suspend fun capturePhoneScreenshotAction(actionJson: JSONObject): JSONObject {
         val maxWidth = actionJson.optInt("max_width", CAPTURE_DEFAULT_MAX_WIDTH)
             .coerceIn(CAPTURE_MIN_WIDTH, CAPTURE_MAX_WIDTH)
-        val bitmap = captureScreenshotWithRetry()
+        val bitmap = runWithOverlayHidden(alwaysHide = true) { captureScreenshotWithRetry() }
             ?: return JSONObject().apply {
                 put("ok", false)
                 put("action", "capture_screenshot")
@@ -558,13 +590,28 @@ class LocalTypingService : AccessibilityService() {
         }
 
         delay(PHONE_ACTION_SETTLE_MS)
-        captureScreenshotSuspend()
+        runWithOverlayHidden(alwaysHide = true) { captureScreenshotSuspend() }
         captureBestSnapshot()
         return JSONObject().apply {
             put("ok", ok)
             put("action", action)
             put("element_id", elementId)
         }
+    }
+
+    private suspend fun <T> runWithOverlayHidden(
+        tapX: Int = -1,
+        tapY: Int = -1,
+        alwaysHide: Boolean = false,
+        block: suspend () -> T
+    ): T {
+        val controller = overlayController ?: return block()
+        return controller.withOverlayHidden(
+            tapX = tapX,
+            tapY = tapY,
+            alwaysHide = alwaysHide,
+            block = block
+        )
     }
 
     private suspend fun performClickOnPhone(
@@ -578,12 +625,14 @@ class LocalTypingService : AccessibilityService() {
         } else {
             AccessibilityNodeInfo.ACTION_CLICK
         }
-        if (node != null && performNodeOrParentAction(node, nodeAction)) {
+        if (node != null && node.refresh() && performNodeOrParentAction(node, nodeAction)) {
             return true
         }
         if (x > 0 && y > 0) {
             val durationMs = if (longPress) 550L else 60L
-            return dispatchTapGesture(x.toFloat(), y.toFloat(), durationMs)
+            return runWithOverlayHidden(tapX = x, tapY = y) {
+                dispatchTapGesture(x.toFloat(), y.toFloat(), durationMs)
+            }
         }
         return false
     }
@@ -595,7 +644,7 @@ class LocalTypingService : AccessibilityService() {
         text: String,
         clearFirst: Boolean
     ): Boolean {
-        if (node != null) {
+        if (node != null && node.refresh()) {
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             if (node.isEditable && insertAtCursor(node, text, clearFirst)) {
@@ -603,7 +652,9 @@ class LocalTypingService : AccessibilityService() {
             }
         }
         if (x > 0 && y > 0) {
-            dispatchTapGesture(x.toFloat(), y.toFloat(), 60L)
+            runWithOverlayHidden(tapX = x, tapY = y) {
+                dispatchTapGesture(x.toFloat(), y.toFloat(), 60L)
+            }
             delay(200L)
         }
         val root = findUnderlyingAppRoot()
@@ -623,7 +674,7 @@ class LocalTypingService : AccessibilityService() {
         } else {
             AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
         }
-        if (node != null && performNodeOrParentAction(node, scrollAction)) {
+        if (node != null && node.refresh() && performNodeOrParentAction(node, scrollAction)) {
             return true
         }
         val root = findUnderlyingAppRoot()
@@ -635,7 +686,9 @@ class LocalTypingService : AccessibilityService() {
         val centerX = metrics.widthPixels / 2f
         val startY = if (direction == "up") metrics.heightPixels * 0.30f else metrics.heightPixels * 0.72f
         val endY = if (direction == "up") metrics.heightPixels * 0.72f else metrics.heightPixels * 0.28f
-        return dispatchSwipeGesture(centerX, startY, centerX, endY, 260L)
+        return runWithOverlayHidden(tapX = centerX.toInt(), tapY = startY.toInt()) {
+            dispatchSwipeGesture(centerX, startY, centerX, endY, 260L)
+        }
     }
 
     private fun performNodeOrParentAction(node: AccessibilityNodeInfo, action: Int): Boolean {
@@ -750,6 +803,9 @@ class LocalTypingService : AccessibilityService() {
 
         @Volatile
         private var cachedUnderlyingScreenshot: Bitmap? = null
+
+        /** True when LocalTypingService is connected and able to host the floating overlay. */
+        fun isRunning(): Boolean = instance != null
 
         /** Queues text to type into the focused field. Returns false when the service is off. */
         fun enqueue(text: String): Boolean {

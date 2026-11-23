@@ -16,7 +16,6 @@ import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.ImageView
@@ -29,17 +28,16 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.chip.Chip
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import me.Integer.localwhisper.databinding.ActivityAssistantBinding
-import org.json.JSONObject
 import java.io.File
 import java.util.Locale
 
@@ -104,9 +102,10 @@ class AssistantActivity : AppCompatActivity() {
     private var isKeyboardMode = false
     private var isAgentMode = false
     private var agentSessionId: String? = null
-    private var lastSubmittedPrompt: String = ""
     private var activeConfirmation: PendingConfirmationInfo? = null
     private var liveTurnViews: LiveStreamingTurnViews? = null
+    private var liveTurnKey: String? = null
+    private var isAgentPaused = false
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
@@ -123,6 +122,8 @@ class AssistantActivity : AppCompatActivity() {
         setContentView(binding.root)
         prefs = ServerPreferences(this)
         sessionStore = AgentSessionStore(this)
+        AgentRuntimeManager.init(applicationContext)
+        AgentRuntimeManager.setActivityVisible(true)
         agentSessionId = sessionStore.resolveInitialSessionId(prefs.agentResumeTimeoutSeconds)
         if (prefs.selectedClientId == LOCAL_TARGET_ID) {
             selectedClient = localTarget
@@ -135,11 +136,28 @@ class AssistantActivity : AppCompatActivity() {
         animateContentIn()
         isKeyboardMode = prefs.startInKeyboardMode
         isAgentMode = prefs.startInAgentMode
+        observeAgentRuntime()
         beginAssistantFlow()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        AgentRuntimeManager.setActivityVisible(true)
+        val runtimeState = AgentRuntimeManager.state.value
+        if (runtimeState.phase != AgentRuntimePhase.IDLE) {
+            attachToRuntimeState(runtimeState)
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        AgentRuntimeManager.setActivityVisible(true)
     }
 
     override fun onStop() {
         super.onStop()
+        AgentRuntimeManager.setActivityVisible(false)
         sessionStore.recordOverlayClosed()
     }
 
@@ -261,6 +279,11 @@ class AssistantActivity : AppCompatActivity() {
     // ------------------------------------------------------------ Flow
 
     private fun beginAssistantFlow() {
+        val runtimeState = AgentRuntimeManager.state.value
+        if (runtimeState.phase != AgentRuntimePhase.IDLE) {
+            attachToRuntimeState(runtimeState)
+            return
+        }
         if (prefs.buildBaseUrl() == null) {
             showSetupRequired(getString(R.string.invalid_server_config))
             return
@@ -274,6 +297,51 @@ class AssistantActivity : AppCompatActivity() {
             return
         }
         startRecording()
+    }
+
+    private fun attachToRuntimeState(state: AgentRuntimeState) {
+        isAgentMode = true
+        if (!state.sessionId.isNullOrBlank()) {
+            agentSessionId = state.sessionId
+        }
+        refreshClientsInBackground()
+        renderFromRuntimeState(state)
+    }
+
+    private fun observeAgentRuntime() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    AgentRuntimeManager.state.collect { state ->
+                        if (state.phase != AgentRuntimePhase.IDLE) {
+                            renderFromRuntimeState(state)
+                        } else if (currentState == UiState.AGENT_THINKING) {
+                            handleRuntimeStopped()
+                        }
+                    }
+                }
+                launch {
+                    AgentRuntimeManager.minimizeRequests.collect {
+                        minimizeToCornerPill(immediate = true)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun handleRuntimeStopped() {
+        liveTurnViews = null
+        liveTurnKey = null
+        isAgentPaused = false
+        activeConfirmation = null
+        binding.confirmationGateCard.visibility = View.GONE
+        val saved = sessionStore.getSession(agentSessionId)
+        if (saved != null && saved.turns.isNotEmpty()) {
+            renderChatHistoryThread(saved)
+            setUiState(UiState.AGENT_RESULT)
+        } else {
+            setUiState(UiState.REVIEW)
+        }
     }
 
     // ------------------------------------------------------------ Input mode
@@ -290,6 +358,7 @@ class AssistantActivity : AppCompatActivity() {
         renderBottomSections(currentState)
         updateTranscriptHint()
         if (currentState == UiState.AGENT_RESULT && !isAgentMode) {
+            AgentRuntimeManager.dismissFinishedState()
             setUiState(UiState.REVIEW)
         }
     }
@@ -341,6 +410,7 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun startFreshAgentSession() {
+        AgentRuntimeManager.dismissFinishedState()
         agentSessionId = sessionStore.startNewSession()
         activeConfirmation = null
         binding.chatHistoryContainer.removeAllViews()
@@ -357,6 +427,7 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun selectExistingAgentSession(session: SavedAgentSession) {
+        AgentRuntimeManager.dismissFinishedState()
         stopTimer()
         binding.waveformView.setActive(false)
         activeJob?.cancel()
@@ -512,101 +583,132 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun sendPromptToAgent(prompt: String) {
-        val baseUrl = prefs.buildBaseUrl()
-        if (baseUrl == null) {
+        if (prefs.buildBaseUrl() == null) {
             showError(getString(R.string.invalid_server_config))
             return
         }
         clearError()
         hideKeyboard()
-        lastSubmittedPrompt = prompt
-        val existingSession = sessionStore.getSession(agentSessionId)
-        val existingTurns = existingSession?.turns.orEmpty()
-        prepareLiveStreamingTurn(existingTurns, userPrompt = prompt, isConfirmationResume = false)
-        setUiState(UiState.AGENT_THINKING)
-
-        val targetClientId = if (isLocalTargetSelected()) null else selectedClient?.id
-        val phoneScreenSnapshot = LocalTypingService.capturePhoneScreenSnapshot()
-        activeJob?.cancel()
-        activeJob = lifecycleScope.launch {
-            val result = api.runAgentStream(
-                baseUrl = baseUrl,
-                prompt = prompt,
-                clientId = targetClientId,
-                sessionId = agentSessionId,
-                priorTurns = existingTurns,
-                phoneScreen = phoneScreenSnapshot,
-                onProgress = { progress ->
-                    withContext(Dispatchers.Main) {
-                        updateLiveStreamingTurn(progress)
-                    }
-                }
-            )
-            result.onSuccess { response ->
-                liveTurnViews = null
-                handleAgentResponse(response, isConfirmationResume = false)
-            }.onFailure { exc ->
-                liveTurnViews = null
-                showError(exc.message ?: getString(R.string.assistant_send_failed))
-                setUiState(UiState.REVIEW)
-            }
+        val isPhoneTarget = isLocalTargetSelected()
+        val targetClientId = if (isPhoneTarget) null else selectedClient?.id
+        val shouldAutoMinimize = isPhoneTarget && LocalTypingService.isRunning()
+        AgentRuntimeManager.startTurn(
+            context = this,
+            prompt = prompt,
+            clientId = targetClientId,
+            sessionId = agentSessionId,
+            isPhoneTarget = isPhoneTarget,
+            waitForActivityHide = shouldAutoMinimize
+        )
+        if (shouldAutoMinimize) {
+            minimizeToCornerPill(immediate = false)
         }
     }
 
     private fun submitAgentConfirmation(approved: Boolean) {
-        val baseUrl = prefs.buildBaseUrl() ?: return
-        val sessionId = agentSessionId ?: return
-        val pending = activeConfirmation ?: return
-
         clearError()
         binding.confirmationGateCard.visibility = View.GONE
-        val existingTurns = sessionStore.getSession(sessionId)?.turns.orEmpty()
-        val lastPrompt = existingTurns.lastOrNull()?.userPrompt.orEmpty()
-        lastSubmittedPrompt = lastPrompt
-        // The resumed stream continues the waiting turn's timeline instead of starting a new one.
-        val resumeTimeline = existingTurns.lastOrNull()?.let { turn ->
-            turn.timeline.ifEmpty { AgentTimeline.fromLegacy(turn.thinking, turn.toolCalls) }
-        }.orEmpty()
-        prepareLiveStreamingTurn(
-            existingTurns = if (existingTurns.isNotEmpty()) existingTurns.dropLast(1) else emptyList(),
-            userPrompt = lastPrompt,
-            isConfirmationResume = true,
-            initialTimeline = resumeTimeline
-        )
-        setUiState(UiState.AGENT_THINKING)
+        AgentRuntimeManager.submitConfirmation(approved = approved)
+    }
 
-        val targetClientId = if (isLocalTargetSelected()) null else selectedClient?.id
-        activeJob?.cancel()
-        activeJob = lifecycleScope.launch {
-            var phoneActionResult: JSONObject? = null
-            var updatedPhoneScreen: JSONObject? = null
-            if (approved && pending.phoneAction != null) {
-                phoneActionResult = runPhoneUiActionWithOverlayPeek(pending.phoneAction)
-                updatedPhoneScreen = LocalTypingService.capturePhoneScreenSnapshot()
-            }
-            val result = api.confirmAgentActionStream(
-                baseUrl = baseUrl,
-                sessionId = sessionId,
-                confirmationId = pending.confirmationId,
-                approved = approved,
-                clientId = targetClientId,
-                initialTimeline = resumeTimeline,
-                phoneScreen = updatedPhoneScreen,
-                phoneActionResult = phoneActionResult,
-                onProgress = { progress ->
-                    withContext(Dispatchers.Main) {
-                        updateLiveStreamingTurn(progress)
+    private fun renderFromRuntimeState(state: AgentRuntimeState) {
+        isAgentMode = true
+        if (!state.sessionId.isNullOrBlank()) {
+            agentSessionId = state.sessionId
+        }
+        when (state.phase) {
+            AgentRuntimePhase.THINKING, AgentRuntimePhase.PAUSED -> {
+                clearError()
+                activeConfirmation = null
+                binding.confirmationGateCard.visibility = View.GONE
+                isAgentPaused = state.phase == AgentRuntimePhase.PAUSED
+                val key = "${state.sessionId.orEmpty()}|${state.userPrompt}|${state.isConfirmationResume}"
+                if (liveTurnViews == null || liveTurnKey != key) {
+                    liveTurnKey = key
+                    val savedTurns = sessionStore.getSession(agentSessionId)?.turns.orEmpty()
+                    val priorTurns = if (state.isConfirmationResume && savedTurns.isNotEmpty()) {
+                        savedTurns.dropLast(1)
+                    } else {
+                        savedTurns
                     }
+                    prepareLiveStreamingTurn(
+                        existingTurns = priorTurns,
+                        userPrompt = state.userPrompt,
+                        isConfirmationResume = state.isConfirmationResume,
+                        initialTimeline = state.timeline
+                    )
                 }
-            )
-            result.onSuccess { response ->
+                updateLiveStreamingTurn(
+                    AgentStreamProgress(
+                        sessionId = state.sessionId.orEmpty(),
+                        timeline = state.timeline,
+                        reply = state.reply
+                    )
+                )
+                setUiState(UiState.AGENT_THINKING)
+            }
+            AgentRuntimePhase.WAITING_CONFIRMATION -> {
+                clearError()
                 liveTurnViews = null
-                handleAgentResponse(response, isConfirmationResume = true)
-            }.onFailure { exc ->
-                liveTurnViews = null
-                showError(exc.message ?: getString(R.string.assistant_send_failed))
+                liveTurnKey = null
+                isAgentPaused = false
+                activeConfirmation = state.pendingConfirmation
+                val savedSession = sessionStore.getSession(agentSessionId)
+                if (savedSession != null) {
+                    renderChatHistoryThread(savedSession, expandLastTimeline = true)
+                }
+                val pending = state.pendingConfirmation
+                if (pending != null) {
+                    binding.confirmationTitleText.setText(
+                        if (pending.phoneAction != null) {
+                            R.string.assistant_confirm_phone_title
+                        } else {
+                            R.string.assistant_confirm_title
+                        }
+                    )
+                    binding.confirmationDescriptionText.text = pending.description
+                    bindConfirmationPreview(pending)
+                    binding.confirmationGateCard.visibility = View.VISIBLE
+                } else {
+                    binding.confirmationPreviewImage.setImageDrawable(null)
+                    binding.confirmationGateCard.visibility = View.GONE
+                }
                 setUiState(UiState.AGENT_RESULT)
             }
+            AgentRuntimePhase.COMPLETED -> {
+                clearError()
+                liveTurnViews = null
+                liveTurnKey = null
+                isAgentPaused = false
+                activeConfirmation = null
+                binding.confirmationPreviewImage.setImageDrawable(null)
+                binding.confirmationGateCard.visibility = View.GONE
+                val savedSession = sessionStore.getSession(agentSessionId)
+                if (savedSession != null) {
+                    renderChatHistoryThread(savedSession, expandLastTimeline = true)
+                }
+                setUiState(UiState.AGENT_RESULT)
+            }
+            AgentRuntimePhase.ERROR -> {
+                liveTurnViews = null
+                liveTurnKey = null
+                isAgentPaused = false
+                activeConfirmation = null
+                binding.confirmationGateCard.visibility = View.GONE
+                showError(state.errorMessage ?: getString(R.string.assistant_send_failed))
+                val savedSession = sessionStore.getSession(agentSessionId)
+                if (state.isConfirmationResume && savedSession != null) {
+                    renderChatHistoryThread(savedSession)
+                    setUiState(UiState.AGENT_RESULT)
+                } else {
+                    if (binding.transcriptInput.text.isNullOrEmpty() && state.userPrompt.isNotBlank()) {
+                        binding.transcriptInput.setText(state.userPrompt)
+                        binding.transcriptInput.setSelection(state.userPrompt.length)
+                    }
+                    setUiState(UiState.REVIEW)
+                }
+            }
+            AgentRuntimePhase.IDLE -> Unit
         }
     }
 
@@ -667,90 +769,34 @@ class AssistantActivity : AppCompatActivity() {
         return remaining <= dpToPx(FOLLOW_SCROLL_THRESHOLD_DP)
     }
 
-    private fun handleAgentResponse(response: AgentResponse, isConfirmationResume: Boolean) {
-        val resolvedSessionId = response.sessionId.ifEmpty {
-            agentSessionId ?: sessionStore.startNewSession()
-        }
-        agentSessionId = resolvedSessionId
-        activeConfirmation = response.pendingConfirmation
-
-        // Execute any native Android system intents (Idea #7)
-        val androidOutcomes = AndroidActionExecutor.executeAll(this, response.androidActions)
-
-        val timeline = response.timeline
-            .ifEmpty { AgentTimeline.fromLegacy(response.thinking, response.toolCalls) }
-            .toMutableList()
-        for (outcome in androidOutcomes) {
-            timeline.add(
-                TimelineEntry.Tool(
-                    tool = AgentTimeline.LOCAL_TOOL_NAME,
-                    status = "ok",
-                    summary = outcome,
-                    local = true
-                )
-            )
-        }
-
-        val turn = AgentChatTurn(
-            userPrompt = lastSubmittedPrompt,
-            thinking = AgentTimeline.thinkingText(timeline),
-            toolCalls = AgentTimeline.toolCalls(timeline),
-            reply = response.reply.ifBlank { getString(R.string.assistant_state_sent) },
-            timeline = timeline
-        )
-        val savedSession = if (isConfirmationResume) {
-            sessionStore.updateLastTurn(resolvedSessionId, turn)
-        } else {
-            sessionStore.recordTurn(resolvedSessionId, turn)
-        }
-
-        renderChatHistoryThread(savedSession, expandLastTimeline = true)
-
-        val pending = response.pendingConfirmation
-        if (pending != null && pending.autoExecute && pending.phoneAction != null) {
-            // Automatic phone actions (such as scroll_phone) execute immediately and resume.
-            submitAgentConfirmation(approved = true)
+    /** Animates or immediately closes the sheet while keeping the corner pill and background agent alive. */
+    private fun minimizeToCornerPill(immediate: Boolean) {
+        if (isDismissing) return
+        isDismissing = true
+        AgentRuntimeManager.setActivityVisible(false)
+        sessionStore.recordOverlayClosed()
+        stopTimer()
+        binding.waveformView.setActive(false)
+        clientsJob?.cancel()
+        recorder?.cancel()
+        recorder = null
+        if (immediate) {
+            finish()
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
             return
         }
-
-        // Bind Confirmation Gate card if a PC or phone action is waiting approval
-        if (pending != null) {
-            binding.confirmationTitleText.setText(
-                if (pending.phoneAction != null) {
-                    R.string.assistant_confirm_phone_title
-                } else {
-                    R.string.assistant_confirm_title
-                }
-            )
-            binding.confirmationDescriptionText.text = pending.description
-            bindConfirmationPreview(pending)
-            binding.confirmationGateCard.visibility = View.VISIBLE
-        } else {
-            binding.confirmationPreviewImage.setImageDrawable(null)
-            binding.confirmationGateCard.visibility = View.GONE
-        }
-
-        setUiState(UiState.AGENT_RESULT)
-    }
-
-    /** Briefly hides the overlay sheet while executing a phone tap/type/scroll/screenshot on the underlying app. */
-    private suspend fun runPhoneUiActionWithOverlayPeek(phoneAction: JSONObject): JSONObject {
-        val isScreenshot = phoneAction.optString("action", "") == "capture_screenshot"
-        window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
-        binding.overlayScrim.alpha = 0f
-        binding.sheetCard.alpha = 0f
-        if (isScreenshot) {
-            binding.overlayScrim.visibility = View.INVISIBLE
-        }
-        return try {
-            delay(if (isScreenshot) 180L else 120L)
-            LocalTypingService.executePhoneUiAction(phoneAction)
-        } finally {
-            binding.overlayScrim.visibility = View.VISIBLE
-            binding.overlayScrim.alpha = 1f
-            binding.sheetCard.alpha = 1f
-            window.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
-        }
+        binding.sheetCard.animate()
+            .alpha(0f)
+            .translationY((binding.sheetCard.height + dpToPx(24)).toFloat())
+            .setDuration(180L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                finish()
+                @Suppress("DEPRECATION")
+                overridePendingTransition(0, 0)
+            }
+            .start()
     }
 
     /** Shows the PC or phone screenshot with the click target outlined, when available. */
@@ -1034,6 +1080,7 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun startKeyboardFollowUp() {
+        AgentRuntimeManager.dismissFinishedState()
         isKeyboardMode = true
         binding.transcriptInput.setText("")
         setUiState(UiState.REVIEW)
@@ -1041,6 +1088,7 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     private fun startVoiceFollowUp() {
+        AgentRuntimeManager.dismissFinishedState()
         isKeyboardMode = false
         startRecording()
     }
@@ -1268,7 +1316,9 @@ class AssistantActivity : AppCompatActivity() {
         subtitle.text = when (state) {
             UiState.SETUP_REQUIRED -> ""
             UiState.TRANSCRIBING -> getString(R.string.assistant_model_hint)
-            UiState.AGENT_THINKING -> getString(R.string.assistant_agent_thinking_hint)
+            UiState.AGENT_THINKING -> getString(
+                if (isAgentPaused) R.string.assistant_agent_paused_hint else R.string.assistant_agent_thinking_hint
+            )
             UiState.SENT -> getString(R.string.assistant_sent_message, sentClientName)
             UiState.RECORDING, UiState.REVIEW, UiState.SENDING, UiState.AGENT_RESULT -> targetDescription()
         }
@@ -1293,7 +1343,8 @@ class AssistantActivity : AppCompatActivity() {
         UiState.REVIEW ->
             if (isKeyboardMode) R.string.assistant_state_typing else R.string.assistant_state_review
         UiState.SENDING -> R.string.assistant_state_sending
-        UiState.AGENT_THINKING -> R.string.assistant_state_thinking
+        UiState.AGENT_THINKING ->
+            if (isAgentPaused) R.string.assistant_state_paused else R.string.assistant_state_thinking
         UiState.AGENT_RESULT ->
             if (activeConfirmation != null) R.string.assistant_state_confirm else R.string.assistant_state_agent_result
         UiState.SENT -> R.string.assistant_state_sent
@@ -1338,7 +1389,23 @@ class AssistantActivity : AppCompatActivity() {
                 center = followUpVoice,
                 right = close
             )
-            UiState.TRANSCRIBING, UiState.AGENT_THINKING, UiState.SETUP_REQUIRED -> ControlSet(null, close, null)
+            UiState.AGENT_THINKING -> ControlSet(
+                left = ControlSpec(
+                    if (isAgentPaused) R.drawable.ic_play else R.drawable.ic_pause,
+                    if (isAgentPaused) R.string.assistant_resume_desc else R.string.assistant_pause_desc
+                ) { AgentRuntimeManager.togglePause() },
+                center = ControlSpec(R.drawable.ic_stop, R.string.assistant_stop_agent_desc) {
+                    AgentRuntimeManager.stop()
+                },
+                right = if (LocalTypingService.isRunning()) {
+                    ControlSpec(R.drawable.ic_chevron_down, R.string.assistant_minimize_desc) {
+                        minimizeToCornerPill(immediate = false)
+                    }
+                } else {
+                    null
+                }
+            )
+            UiState.TRANSCRIBING, UiState.SETUP_REQUIRED -> ControlSet(null, close, null)
             UiState.SENT -> ControlSet(null, null, null)
         }
     }
@@ -1410,7 +1477,18 @@ class AssistantActivity : AppCompatActivity() {
 
     private fun dismissOverlay() {
         if (isDismissing) return
+        val runtimeState = AgentRuntimeManager.state.value
+        if (runtimeState.isRunningOrWaiting && LocalTypingService.isRunning()) {
+            minimizeToCornerPill(immediate = false)
+            return
+        }
+        if (runtimeState.isRunningOrWaiting) {
+            AgentRuntimeManager.stop()
+        } else {
+            AgentRuntimeManager.dismissFinishedState()
+        }
         isDismissing = true
+        AgentRuntimeManager.setActivityVisible(false)
         sessionStore.recordOverlayClosed()
         stopTimer()
         binding.waveformView.setActive(false)
@@ -1451,6 +1529,7 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     companion object {
+        const val EXTRA_ATTACH_ACTIVE_AGENT = "attach_active_agent"
         private const val TAG = "LW-Assistant"
         private const val TIMER_TICK_MS = 250L
         private const val SENT_DISMISS_DELAY_MS = 650L
