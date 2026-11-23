@@ -10,7 +10,9 @@ data class AgentChatTurn(
     val userPrompt: String,
     val thinking: String,
     val toolCalls: List<AgentToolCallInfo>,
-    val reply: String
+    val reply: String,
+    /** Thinking blocks and tool steps in the order they happened. */
+    val timeline: List<TimelineEntry> = emptyList()
 )
 
 data class SavedAgentSession(
@@ -128,11 +130,9 @@ class AgentSessionStore(context: Context) {
         val mutableTurns = current.turns.toMutableList()
         if (mutableTurns.isNotEmpty()) {
             val prev = mutableTurns.last()
+            // The resumed turn's timeline already starts with everything before the approval.
             mutableTurns[mutableTurns.lastIndex] = updatedTurn.copy(
-                userPrompt = updatedTurn.userPrompt.ifBlank { prev.userPrompt },
-                thinking = listOf(prev.thinking, updatedTurn.thinking)
-                    .filter { it.isNotBlank() }
-                    .joinToString("\n\n")
+                userPrompt = updatedTurn.userPrompt.ifBlank { prev.userPrompt }
             )
         } else {
             mutableTurns.add(updatedTurn)
@@ -189,9 +189,11 @@ class AgentSessionStore(context: Context) {
             turnsArray.put(
                 JSONObject().apply {
                     put("user_prompt", turn.userPrompt)
-                    put("thinking", turn.thinking)
+                    // Thinking lives in the timeline; the flat field is only kept for old turns.
+                    put("thinking", if (turn.timeline.isEmpty()) turn.thinking else "")
                     put("reply", turn.reply)
                     put("tool_calls", toolsArray)
+                    put("timeline", serializeTimeline(turn.timeline))
                 }
             )
         }
@@ -226,12 +228,16 @@ class AgentSessionStore(context: Context) {
                     )
                 }
             }
+            val legacyThinking = tObj.optString("thinking", "")
+            val timeline = parseTimeline(tObj.optJSONArray("timeline"))
+                .ifEmpty { AgentTimeline.fromLegacy(legacyThinking, tools) }
             turns.add(
                 AgentChatTurn(
                     userPrompt = tObj.optString("user_prompt", ""),
-                    thinking = tObj.optString("thinking", ""),
+                    thinking = AgentTimeline.thinkingText(timeline),
                     toolCalls = tools,
-                    reply = tObj.optString("reply", "")
+                    reply = tObj.optString("reply", ""),
+                    timeline = timeline
                 )
             )
         }
@@ -242,6 +248,47 @@ class AgentSessionStore(context: Context) {
             updatedAtMs = updatedAt,
             turns = turns
         )
+    }
+
+    private fun serializeTimeline(entries: List<TimelineEntry>): JSONArray {
+        val array = JSONArray()
+        for (entry in entries) {
+            val obj = when (entry) {
+                is TimelineEntry.Thinking -> JSONObject().apply {
+                    put("kind", "thinking")
+                    put("text", entry.text)
+                }
+                is TimelineEntry.Tool -> JSONObject().apply {
+                    put("kind", "tool")
+                    put("tool", entry.tool)
+                    put("status", entry.status)
+                    put("summary", entry.summary)
+                    put("local", entry.local)
+                }
+            }
+            array.put(obj)
+        }
+        return array
+    }
+
+    private fun parseTimeline(array: JSONArray?): List<TimelineEntry> {
+        if (array == null) return emptyList()
+        val entries = ArrayList<TimelineEntry>(array.length())
+        for (i in 0 until array.length()) {
+            val obj = array.optJSONObject(i) ?: continue
+            when (obj.optString("kind", "")) {
+                "thinking" -> entries.add(TimelineEntry.Thinking(obj.optString("text", "")))
+                "tool" -> entries.add(
+                    TimelineEntry.Tool(
+                        tool = obj.optString("tool", ""),
+                        status = obj.optString("status", "ok"),
+                        summary = obj.optString("summary", ""),
+                        local = obj.optBoolean("local", false)
+                    )
+                )
+            }
+        }
+        return entries
     }
 
     companion object {

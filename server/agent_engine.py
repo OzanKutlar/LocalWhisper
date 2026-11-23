@@ -911,6 +911,7 @@ class AgentEngine:
             raise ValueError("No matching pending tool confirmation found for this session")
 
         session.pending_confirmation = None
+        self._begin_confirmation_resume(session)
         effective_client_id = client_id or pending.client_id
 
         if approved:
@@ -1005,6 +1006,7 @@ class AgentEngine:
             raise ValueError("No matching pending tool confirmation found for this session")
 
         session.pending_confirmation = None
+        self._begin_confirmation_resume(session)
         effective_client_id = client_id or pending.client_id
         yield {"type": "session", "session_id": session.session_id}
 
@@ -1366,6 +1368,20 @@ class AgentEngine:
                 "content": json.dumps(output),
             }
         )
+
+    @staticmethod
+    def _begin_confirmation_resume(session: AgentSession) -> None:
+        """Prepares a session to continue after the user approved or rejected a gated tool.
+
+        The 'waiting approval' record is removed so the approved/rejected result takes its
+        position (the phone updates that row in place), and phone actions already delivered
+        with the gated response are cleared so they are not executed a second time.
+        """
+        session.android_actions.clear()
+        for index in range(len(session.tool_records) - 1, -1, -1):
+            if session.tool_records[index].status == "pending_confirmation":
+                session.tool_records.pop(index)
+                return
 
     def _note_screen_read(self, session: AgentSession, tool_name: str) -> None:
         """Prunes older snapshots before a new one arrives and marks the turn as tainted."""

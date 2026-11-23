@@ -72,14 +72,15 @@ data class AgentResponse(
     val reply: String,
     val toolCalls: List<AgentToolCallInfo>,
     val androidActions: List<AndroidClientAction>,
-    val pendingConfirmation: PendingConfirmationInfo?
+    val pendingConfirmation: PendingConfirmationInfo?,
+    /** Ordered thinking/tool steps, filled in when the response came from a stream. */
+    val timeline: List<TimelineEntry> = emptyList()
 )
 
 data class AgentStreamProgress(
     val sessionId: String,
-    val thinking: String,
-    val reply: String,
-    val toolCalls: List<AgentToolCallInfo>
+    val timeline: List<TimelineEntry>,
+    val reply: String
 )
 
 data class UpdateTriggerResponse(
@@ -359,7 +360,7 @@ class LocalWhisperApi {
             .url("$baseUrl/api/agent/stream")
             .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
-        executeNdjsonStreamRequest(request, sessionId.orEmpty(), onProgress)
+        executeNdjsonStreamRequest(request, sessionId.orEmpty(), emptyList(), onProgress)
     }
 
     suspend fun confirmAgentActionStream(
@@ -368,6 +369,7 @@ class LocalWhisperApi {
         confirmationId: String,
         approved: Boolean,
         clientId: String?,
+        initialTimeline: List<TimelineEntry> = emptyList(),
         onProgress: suspend (AgentStreamProgress) -> Unit
     ): Result<AgentResponse> = withContext(Dispatchers.IO) {
         val payload = JSONObject().apply {
@@ -382,31 +384,38 @@ class LocalWhisperApi {
             .url("$baseUrl/api/agent/confirm/stream")
             .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
-        executeNdjsonStreamRequest(request, sessionId, onProgress)
+        executeNdjsonStreamRequest(request, sessionId, initialTimeline, onProgress)
+    }
+
+    /** Mutable state of one agent stream; progress snapshots are immutable copies. */
+    private class StreamState(var sessionId: String, initialTimeline: List<TimelineEntry>) {
+        val timeline: MutableList<TimelineEntry> = initialTimeline.toMutableList()
+        val reply = StringBuilder()
+        var finalResponse: AgentResponse? = null
+
+        fun progress(): AgentStreamProgress =
+            AgentStreamProgress(sessionId = sessionId, timeline = timeline.toList(), reply = reply.toString())
     }
 
     private suspend fun executeNdjsonStreamRequest(
         request: Request,
         initialSessionId: String,
+        initialTimeline: List<TimelineEntry>,
         onProgress: suspend (AgentStreamProgress) -> Unit
     ): Result<AgentResponse> {
         return try {
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     val bodyText = response.body?.string().orEmpty()
-                    val detail = extractErrorDetail(bodyText, response.code)
-                    return Result.failure(IOException(detail))
+                    return Result.failure(IOException(extractErrorDetail(bodyText, response.code)))
                 }
                 val source = response.body?.source()
                     ?: return Result.failure(IOException("Empty stream from server"))
 
-                var currentSessionId = initialSessionId
-                val thinkingBuilder = StringBuilder()
-                val replyBuilder = StringBuilder()
-                var currentTools: List<AgentToolCallInfo> = emptyList()
-                var finalResponse: AgentResponse? = null
-
-                while (!source.exhausted()) {
+                val state = StreamState(initialSessionId, initialTimeline)
+                var linesRead = 0
+                while (!source.exhausted() && linesRead < MAX_STREAM_LINES) {
+                    linesRead++
                     val line = source.readUtf8Line()?.trim().orEmpty()
                     if (line.isEmpty()) continue
                     val event = try {
@@ -414,62 +423,13 @@ class LocalWhisperApi {
                     } catch (_: Exception) {
                         continue
                     }
-                    when (event.optString("type", "")) {
-                        "session" -> {
-                            currentSessionId = event.optString("session_id", currentSessionId)
-                        }
-                        "thinking_delta" -> {
-                            val delta = event.optString("delta", "")
-                            if (delta.isNotEmpty()) {
-                                thinkingBuilder.append(delta)
-                                onProgress(
-                                    AgentStreamProgress(
-                                        sessionId = currentSessionId,
-                                        thinking = thinkingBuilder.toString(),
-                                        reply = replyBuilder.toString(),
-                                        toolCalls = currentTools
-                                    )
-                                )
-                            }
-                        }
-                        "reply_delta" -> {
-                            val delta = event.optString("delta", "")
-                            if (delta.isNotEmpty()) {
-                                replyBuilder.append(delta)
-                                onProgress(
-                                    AgentStreamProgress(
-                                        sessionId = currentSessionId,
-                                        thinking = thinkingBuilder.toString(),
-                                        reply = replyBuilder.toString(),
-                                        toolCalls = currentTools
-                                    )
-                                )
-                            }
-                        }
-                        "tool_calls" -> {
-                            currentTools = parseToolCallsArray(event.optJSONArray("tool_calls"))
-                            onProgress(
-                                AgentStreamProgress(
-                                    sessionId = currentSessionId,
-                                    thinking = thinkingBuilder.toString(),
-                                    reply = replyBuilder.toString(),
-                                    toolCalls = currentTools
-                                )
-                            )
-                        }
-                        "done" -> {
-                            val resultObj = event.optJSONObject("result")
-                            if (resultObj != null) {
-                                finalResponse = parseAgentResponse(resultObj)
-                            }
-                        }
-                        "error" -> {
-                            val detail = event.optString("detail", "Agent stream error")
-                            return Result.failure(IOException(detail))
-                        }
+                    val streamError = applyStreamEvent(event, state, onProgress)
+                    if (streamError != null) {
+                        return Result.failure(streamError)
                     }
                 }
 
+                val finalResponse = state.finalResponse
                 if (finalResponse != null) {
                     Result.success(finalResponse)
                 } else {
@@ -479,6 +439,55 @@ class LocalWhisperApi {
         } catch (exc: Exception) {
             Result.failure(exc)
         }
+    }
+
+    /** Applies one NDJSON event to the stream state; returns an error when the server reported one. */
+    private suspend fun applyStreamEvent(
+        event: JSONObject,
+        state: StreamState,
+        onProgress: suspend (AgentStreamProgress) -> Unit
+    ): IOException? {
+        when (event.optString("type", "")) {
+            "session" -> state.sessionId = event.optString("session_id", state.sessionId)
+            "thinking_delta" -> {
+                val delta = event.optString("delta", "")
+                if (delta.isNotEmpty()) {
+                    AgentTimeline.appendThinking(state.timeline, delta)
+                    onProgress(state.progress())
+                }
+            }
+            "reply_delta" -> {
+                val delta = event.optString("delta", "")
+                if (delta.isNotEmpty()) {
+                    state.reply.append(delta)
+                    onProgress(state.progress())
+                }
+            }
+            "tool_calls" -> {
+                AgentTimeline.reconcileTools(state.timeline, parseToolCallsArray(event.optJSONArray("tool_calls")))
+                onProgress(state.progress())
+            }
+            "done" -> {
+                val resultObj = event.optJSONObject("result")
+                if (resultObj != null) {
+                    state.finalResponse = finishStreamedResponse(parseAgentResponse(resultObj), state.timeline)
+                }
+            }
+            "error" -> return IOException(event.optString("detail", "Agent stream error"))
+        }
+        return null
+    }
+
+    /** Applies the final tool statuses and attaches the ordered timeline to the response. */
+    private fun finishStreamedResponse(
+        response: AgentResponse,
+        timeline: MutableList<TimelineEntry>
+    ): AgentResponse {
+        AgentTimeline.reconcileTools(timeline, response.toolCalls)
+        if (response.thinking.isNotBlank() && !AgentTimeline.hasThinking(timeline)) {
+            timeline.add(0, TimelineEntry.Thinking(response.thinking))
+        }
+        return response.copy(timeline = timeline.toList())
     }
 
     private fun parseToolCallsArray(toolArray: JSONArray?): List<AgentToolCallInfo> {
@@ -599,6 +608,7 @@ class LocalWhisperApi {
     }
 
     companion object {
+        private const val MAX_STREAM_LINES = 200_000
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val AUDIO_WAV_MEDIA_TYPE = "audio/wav".toMediaType()
     }

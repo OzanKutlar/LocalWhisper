@@ -105,8 +105,8 @@
     <string name="assistant_voice_mode_desc">Dictate instead of typing</string>
     <string name="assistant_agent_mode_desc">Toggle thinking Agent mode</string>
     <string name="assistant_agent_prompt_hint">Ask the Agent (PC macros, apps, media, or phone timers/alarms)…</string>
-    <string name="assistant_thinking_header_collapsed">Thinking process (tap to view)</string>
-    <string name="assistant_thinking_header_expanded">Thinking process (tap to hide)</string>
+    <string name="assistant_timeline_header_collapsed">Thinking · %1$d tool steps (tap to view)</string>
+    <string name="assistant_timeline_header_expanded">Thinking · %1$d tool steps (tap to hide)</string>
     <string name="assistant_confirm_title">Approval required for PC action</string>
     <string name="assistant_confirm_approve">Approve</string>
     <string name="assistant_confirm_reject">Reject</string>

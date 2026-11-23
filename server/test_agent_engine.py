@@ -533,5 +533,79 @@ class ClickLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1]["result"]["status"], "confirmation_required")
 
 
+class ConfirmationResumeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_approval_replaces_waiting_record_in_place(self) -> None:
+        hub = ScriptedClientHub({"prepare_click": PREPARED_INBOX})
+        scripted = [
+            tool_message("click_screen_element", '{"element_id": "e4"}'),
+            {"role": "assistant", "content": "Done."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        first = await engine.run_turn("Click inbox")
+        self.assertEqual([c["status"] for c in first.tool_calls], ["pending_confirmation"])
+
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=first.pending_confirmation["confirmation_id"],
+            approved=True,
+        )
+        self.assertEqual([c["status"] for c in resumed.tool_calls], ["ok"])
+
+    async def test_rejection_replaces_waiting_record_in_place(self) -> None:
+        hub = ScriptedClientHub({"prepare_click": PREPARED_INBOX})
+        scripted = [
+            tool_message("click_screen_element", '{"element_id": "e4"}'),
+            {"role": "assistant", "content": "Okay, I did not click it."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        first = await engine.run_turn("Click inbox")
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=first.pending_confirmation["confirmation_id"],
+            approved=False,
+        )
+        self.assertEqual([c["status"] for c in resumed.tool_calls], ["rejected"])
+        self.assertEqual([name for name, _ in hub.calls], ["prepare_click"])
+
+    async def test_phone_actions_are_not_repeated_after_approval(self) -> None:
+        hub = FakeClientHub()
+        scripted = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_timer",
+                        "function": {
+                            "name": "trigger_android_intent",
+                            "arguments": '{"intent_type": "set_timer", "seconds": 60}',
+                        },
+                    },
+                    {
+                        "id": "call_close",
+                        "function": {
+                            "name": "manage_pc_app",
+                            "arguments": '{"action": "close_window", "target": "Chrome"}',
+                        },
+                    },
+                ],
+            },
+            {"role": "assistant", "content": "Timer set and Chrome closed."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        first = await engine.run_turn("Set a 1 minute timer and close Chrome")
+        self.assertEqual(first.status, "confirmation_required")
+        self.assertEqual(len(first.android_actions), 1)
+
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=first.pending_confirmation["confirmation_id"],
+            approved=True,
+        )
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual(resumed.android_actions, [])
+        self.assertEqual(hub.calls[-1][0], "manage_pc_app")
+
+
 if __name__ == "__main__":
     unittest.main()

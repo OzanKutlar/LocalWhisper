@@ -18,7 +18,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
-import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -32,7 +31,6 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.chip.Chip
-import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -68,15 +66,20 @@ class AssistantActivity : AppCompatActivity() {
         val right: ControlSpec?
     )
 
-    private data class LiveStreamingTurnViews(
-        val thinkingCard: LinearLayout,
-        val thinkingHeader: TextView,
-        val thinkingBody: TextView,
-        val toolScroll: HorizontalScrollView,
-        val toolGroup: ChipGroup,
-        val replyBox: TextView,
-        var userToggledThinking: Boolean = false,
-        var isThinkingExpanded: Boolean = true
+    /** Collapsible card holding one turn's thinking blocks and tool steps in the order they happened. */
+    private class TimelineViews(
+        val card: LinearLayout,
+        val header: TextView,
+        val container: LinearLayout
+    ) {
+        val rendered: MutableList<View> = ArrayList()
+        var entries: List<TimelineEntry> = emptyList()
+        var expanded: Boolean = true
+    }
+
+    private class LiveStreamingTurnViews(
+        val timeline: TimelineViews,
+        val replyBox: TextView
     )
 
     private lateinit var binding: ActivityAssistantBinding
@@ -558,12 +561,15 @@ class AssistantActivity : AppCompatActivity() {
         val existingTurns = sessionStore.getSession(sessionId)?.turns.orEmpty()
         val lastPrompt = existingTurns.lastOrNull()?.userPrompt.orEmpty()
         lastSubmittedPrompt = lastPrompt
+        // The resumed stream continues the waiting turn's timeline instead of starting a new one.
+        val resumeTimeline = existingTurns.lastOrNull()?.let { turn ->
+            turn.timeline.ifEmpty { AgentTimeline.fromLegacy(turn.thinking, turn.toolCalls) }
+        }.orEmpty()
         prepareLiveStreamingTurn(
             existingTurns = if (existingTurns.isNotEmpty()) existingTurns.dropLast(1) else emptyList(),
             userPrompt = lastPrompt,
             isConfirmationResume = true,
-            initialThinking = existingTurns.lastOrNull()?.thinking.orEmpty(),
-            initialTools = existingTurns.lastOrNull()?.toolCalls.orEmpty()
+            initialTimeline = resumeTimeline
         )
         setUiState(UiState.AGENT_THINKING)
 
@@ -576,6 +582,7 @@ class AssistantActivity : AppCompatActivity() {
                 confirmationId = pending.confirmationId,
                 approved = approved,
                 clientId = targetClientId,
+                initialTimeline = resumeTimeline,
                 onProgress = { progress ->
                     withContext(Dispatchers.Main) {
                         updateLiveStreamingTurn(progress)
@@ -597,8 +604,7 @@ class AssistantActivity : AppCompatActivity() {
         existingTurns: List<AgentChatTurn>,
         userPrompt: String,
         isConfirmationResume: Boolean,
-        initialThinking: String = "",
-        initialTools: List<AgentToolCallInfo> = emptyList()
+        initialTimeline: List<TimelineEntry> = emptyList()
     ) {
         val container = binding.chatHistoryContainer
         container.removeAllViews()
@@ -606,138 +612,26 @@ class AssistantActivity : AppCompatActivity() {
             container.addView(buildTurnView(turn, isFirst = index == 0))
         }
 
-        val isFirst = existingTurns.isEmpty()
-        val turnWrapper = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                if (!isFirst) topMargin = dpToPx(12)
-            }
-        }
-
+        val turnWrapper = newTurnWrapper(isFirst = existingTurns.isEmpty())
         if (userPrompt.isNotBlank()) {
-            val userBox = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundResource(R.drawable.bg_status_pill)
-                setPadding(dpToPx(14), dpToPx(8), dpToPx(14), dpToPx(8))
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    bottomMargin = dpToPx(6)
-                }
-            }
-            val userLabel = TextView(this).apply {
-                text = getString(R.string.assistant_you_label)
-                textSize = 11f
-                setTypeface(typeface, Typeface.BOLD)
-                setTextColor(ContextCompat.getColor(context, R.color.lw_accent))
-            }
-            val userText = TextView(this).apply {
-                text = userPrompt
-                textSize = 14f
-                setTextColor(ContextCompat.getColor(context, R.color.lw_text_primary))
-            }
-            userBox.addView(userLabel)
-            userBox.addView(userText)
-            turnWrapper.addView(userBox)
+            turnWrapper.addView(buildUserBubble(userPrompt))
         }
+        val timelineViews = buildTimelineCard(startExpanded = true)
+        timelineViews.card.setOnClickListener {
+            performTapHaptic(it)
+            toggleTimeline(timelineViews)
+            adjustAgentScrollHeightAndScrollToBottom(scrollToBottom = false)
+        }
+        turnWrapper.addView(timelineViews.card)
 
-        val thinkingCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundResource(R.drawable.bg_info_panel)
-            setPadding(dpToPx(12), dpToPx(9), dpToPx(12), dpToPx(9))
-            isClickable = true
-            isFocusable = true
-            visibility = visibleIf(initialThinking.isNotBlank())
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dpToPx(6)
-            }
-        }
-        val thinkingHeader = TextView(this).apply {
-            text = getString(R.string.assistant_thinking_header_expanded)
-            textSize = 12f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(ContextCompat.getColor(context, R.color.lw_accent))
-        }
-        val thinkingBody = TextView(this).apply {
-            text = initialThinking
-            textSize = 12f
-            typeface = Typeface.MONOSPACE
-            setTextColor(ContextCompat.getColor(context, R.color.lw_text_secondary))
-            visibility = View.VISIBLE
-            setPadding(0, dpToPx(6), 0, 0)
-        }
-        thinkingCard.addView(thinkingHeader)
-        thinkingCard.addView(thinkingBody)
-        turnWrapper.addView(thinkingCard)
-
-        val toolScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            visibility = visibleIf(initialTools.isNotEmpty())
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dpToPx(6)
-            }
-        }
-        val toolGroup = ChipGroup(this).apply {
-            isSingleLine = true
-            chipSpacingHorizontal = dpToPx(6)
-        }
-        toolScroll.addView(toolGroup)
-        turnWrapper.addView(toolScroll)
-
-        val replyBox = TextView(this).apply {
-            text = getString(
-                if (isConfirmationResume) R.string.assistant_agent_thinking_hint else R.string.assistant_state_thinking
-            )
-            textSize = 15f
-            setTextIsSelectable(true)
-            setLineSpacing(0f, 1.2f)
-            setBackgroundResource(R.drawable.bg_info_panel)
-            setPadding(dpToPx(14), dpToPx(11), dpToPx(14), dpToPx(11))
-            setTextColor(ContextCompat.getColor(context, R.color.lw_text_secondary))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
+        val placeholderRes =
+            if (isConfirmationResume) R.string.assistant_agent_thinking_hint else R.string.assistant_state_thinking
+        val replyBox = buildReplyBox(getString(placeholderRes), R.color.lw_text_secondary)
         turnWrapper.addView(replyBox)
         container.addView(turnWrapper)
 
-        val views = LiveStreamingTurnViews(
-            thinkingCard = thinkingCard,
-            thinkingHeader = thinkingHeader,
-            thinkingBody = thinkingBody,
-            toolScroll = toolScroll,
-            toolGroup = toolGroup,
-            replyBox = replyBox
-        )
-        thinkingCard.setOnClickListener {
-            performTapHaptic(it)
-            views.userToggledThinking = true
-            views.isThinkingExpanded = !views.isThinkingExpanded
-            thinkingBody.visibility = visibleIf(views.isThinkingExpanded)
-            thinkingHeader.setText(
-                if (views.isThinkingExpanded) {
-                    R.string.assistant_thinking_header_expanded
-                } else {
-                    R.string.assistant_thinking_header_collapsed
-                }
-            )
-            adjustAgentScrollHeightAndScrollToBottom(scrollToBottom = false)
-        }
-        if (initialTools.isNotEmpty()) {
-            bindChipsToGroup(toolGroup, initialTools)
-        }
-        liveTurnViews = views
+        syncTimelineViews(timelineViews, initialTimeline)
+        liveTurnViews = LiveStreamingTurnViews(timelineViews, replyBox)
         adjustAgentScrollHeightAndScrollToBottom(scrollToBottom = true)
     }
 
@@ -746,28 +640,21 @@ class AssistantActivity : AppCompatActivity() {
             agentSessionId = progress.sessionId
         }
         val views = liveTurnViews ?: return
-
-        if (progress.thinking.isNotBlank()) {
-            views.thinkingCard.visibility = View.VISIBLE
-            views.thinkingBody.text = progress.thinking
-            if (!views.userToggledThinking) {
-                views.isThinkingExpanded = true
-                views.thinkingBody.visibility = View.VISIBLE
-                views.thinkingHeader.setText(R.string.assistant_thinking_header_expanded)
-            }
-        }
-
-        if (progress.toolCalls.isNotEmpty()) {
-            views.toolScroll.visibility = View.VISIBLE
-            bindChipsToGroup(views.toolGroup, progress.toolCalls)
-        }
-
+        // Follow new output only while the user is at the bottom; scrolling up to read stops it.
+        val follow = isAgentScrollNearBottom()
+        syncTimelineViews(views.timeline, progress.timeline)
         if (progress.reply.isNotBlank()) {
             views.replyBox.setTextColor(ContextCompat.getColor(this, R.color.lw_text_primary))
             views.replyBox.text = progress.reply
         }
+        adjustAgentScrollHeightAndScrollToBottom(scrollToBottom = follow)
+    }
 
-        adjustAgentScrollHeightAndScrollToBottom(scrollToBottom = true)
+    private fun isAgentScrollNearBottom(): Boolean {
+        val scroll = binding.agentResultScroll
+        val content = scroll.getChildAt(0) ?: return true
+        val remaining = content.bottom - (scroll.scrollY + scroll.height)
+        return remaining <= dpToPx(FOLLOW_SCROLL_THRESHOLD_DP)
     }
 
     private fun handleAgentResponse(response: AgentResponse, isConfirmationResume: Boolean) {
@@ -780,17 +667,26 @@ class AssistantActivity : AppCompatActivity() {
         // Execute any native Android system intents (Idea #7)
         val androidOutcomes = AndroidActionExecutor.executeAll(this, response.androidActions)
 
-        val allPills = ArrayList<AgentToolCallInfo>(response.toolCalls.size + androidOutcomes.size)
-        allPills.addAll(response.toolCalls)
+        val timeline = response.timeline
+            .ifEmpty { AgentTimeline.fromLegacy(response.thinking, response.toolCalls) }
+            .toMutableList()
         for (outcome in androidOutcomes) {
-            allPills.add(AgentToolCallInfo(tool = "android", status = "ok", summary = outcome))
+            timeline.add(
+                TimelineEntry.Tool(
+                    tool = AgentTimeline.LOCAL_TOOL_NAME,
+                    status = "ok",
+                    summary = outcome,
+                    local = true
+                )
+            )
         }
 
         val turn = AgentChatTurn(
             userPrompt = lastSubmittedPrompt,
-            thinking = response.thinking,
-            toolCalls = allPills,
-            reply = response.reply.ifBlank { getString(R.string.assistant_state_sent) }
+            thinking = AgentTimeline.thinkingText(timeline),
+            toolCalls = AgentTimeline.toolCalls(timeline),
+            reply = response.reply.ifBlank { getString(R.string.assistant_state_sent) },
+            timeline = timeline
         )
         val savedSession = if (isConfirmationResume) {
             sessionStore.updateLastTurn(resolvedSessionId, turn)
@@ -798,7 +694,7 @@ class AssistantActivity : AppCompatActivity() {
             sessionStore.recordTurn(resolvedSessionId, turn)
         }
 
-        renderChatHistoryThread(savedSession)
+        renderChatHistoryThread(savedSession, expandLastTimeline = true)
 
         // Bind Confirmation Gate card if a high-impact PC tool is waiting approval (Idea #10)
         val pending = response.pendingConfirmation
@@ -855,170 +751,215 @@ class AssistantActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun renderChatHistoryThread(session: SavedAgentSession) {
+    private fun renderChatHistoryThread(session: SavedAgentSession, expandLastTimeline: Boolean = false) {
         val container = binding.chatHistoryContainer
         container.removeAllViews()
         val turns = session.turns
         for ((index, turn) in turns.withIndex()) {
-            container.addView(buildTurnView(turn, isFirst = index == 0))
+            val expand = expandLastTimeline && index == turns.lastIndex
+            container.addView(buildTurnView(turn, isFirst = index == 0, expandTimeline = expand))
         }
         adjustAgentScrollHeightAndScrollToBottom()
     }
 
-    private fun buildTurnView(turn: AgentChatTurn, isFirst: Boolean): View {
-        val turnWrapper = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                if (!isFirst) topMargin = dpToPx(12)
-            }
-        }
-
-        // 1. User message bubble
+    private fun buildTurnView(turn: AgentChatTurn, isFirst: Boolean, expandTimeline: Boolean = false): View {
+        val turnWrapper = newTurnWrapper(isFirst)
         if (turn.userPrompt.isNotBlank()) {
-            val userBox = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundResource(R.drawable.bg_status_pill)
-                setPadding(dpToPx(14), dpToPx(8), dpToPx(14), dpToPx(8))
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    bottomMargin = dpToPx(6)
-                }
-            }
-            val userLabel = TextView(this).apply {
-                text = getString(R.string.assistant_you_label)
-                textSize = 11f
-                setTypeface(typeface, Typeface.BOLD)
-                setTextColor(ContextCompat.getColor(context, R.color.lw_accent))
-            }
-            val userText = TextView(this).apply {
-                text = turn.userPrompt
-                textSize = 14f
-                setTextColor(ContextCompat.getColor(context, R.color.lw_text_primary))
-            }
-            userBox.addView(userLabel)
-            userBox.addView(userText)
-            turnWrapper.addView(userBox)
+            turnWrapper.addView(buildUserBubble(turn.userPrompt))
         }
-
-        // 2. Collapsible Thinking drawer for this turn
-        if (turn.thinking.isNotBlank()) {
-            val thinkingCard = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundResource(R.drawable.bg_info_panel)
-                setPadding(dpToPx(12), dpToPx(9), dpToPx(12), dpToPx(9))
-                isClickable = true
-                isFocusable = true
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    bottomMargin = dpToPx(6)
-                }
-            }
-            val headerText = TextView(this).apply {
-                text = getString(R.string.assistant_thinking_header_collapsed)
-                textSize = 12f
-                setTypeface(typeface, Typeface.BOLD)
-                setTextColor(ContextCompat.getColor(context, R.color.lw_accent))
-            }
-            val bodyText = TextView(this).apply {
-                text = turn.thinking
-                textSize = 12f
-                typeface = Typeface.MONOSPACE
-                setTextColor(ContextCompat.getColor(context, R.color.lw_text_secondary))
-                visibility = View.GONE
-                setPadding(0, dpToPx(6), 0, 0)
-            }
-            thinkingCard.setOnClickListener {
+        val entries = turn.timeline.ifEmpty { AgentTimeline.fromLegacy(turn.thinking, turn.toolCalls) }
+        if (entries.isNotEmpty()) {
+            // Collapsed cards only build their rows when the user expands them.
+            val timelineViews = buildTimelineCard(startExpanded = expandTimeline)
+            timelineViews.card.setOnClickListener {
                 performTapHaptic(it)
-                val expanded = bodyText.visibility != View.VISIBLE
-                bodyText.visibility = visibleIf(expanded)
-                headerText.setText(
-                    if (expanded) {
-                        R.string.assistant_thinking_header_expanded
-                    } else {
-                        R.string.assistant_thinking_header_collapsed
-                    }
-                )
+                toggleTimeline(timelineViews)
                 adjustAgentScrollHeightAndScrollToBottom(scrollToBottom = false)
             }
-            thinkingCard.addView(headerText)
-            thinkingCard.addView(bodyText)
-            turnWrapper.addView(thinkingCard)
+            syncTimelineViews(timelineViews, entries)
+            turnWrapper.addView(timelineViews.card)
         }
-
-        // 3. Tool Execution Status Pills for this turn
-        if (turn.toolCalls.isNotEmpty()) {
-            val chipScroll = HorizontalScrollView(this).apply {
-                isHorizontalScrollBarEnabled = false
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    bottomMargin = dpToPx(6)
-                }
-            }
-            val chipGroup = ChipGroup(this).apply {
-                isSingleLine = true
-                chipSpacingHorizontal = dpToPx(6)
-            }
-            bindChipsToGroup(chipGroup, turn.toolCalls)
-            chipScroll.addView(chipGroup)
-            turnWrapper.addView(chipScroll)
-        }
-
-        // 4. Agent reply bubble
-        val replyBox = TextView(this).apply {
-            text = turn.reply
-            textSize = 15f
-            setTextIsSelectable(true)
-            setLineSpacing(0f, 1.2f)
-            setBackgroundResource(R.drawable.bg_info_panel)
-            setPadding(dpToPx(14), dpToPx(11), dpToPx(14), dpToPx(11))
-            setTextColor(ContextCompat.getColor(context, R.color.lw_text_primary))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-        turnWrapper.addView(replyBox)
+        turnWrapper.addView(buildReplyBox(turn.reply, R.color.lw_text_primary))
         return turnWrapper
     }
 
-    private fun bindChipsToGroup(chipGroup: ChipGroup, pills: List<AgentToolCallInfo>) {
-        chipGroup.removeAllViews()
-        val chipBg = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.lw_pill_bg))
-        for (pill in pills) {
-            val prefix = when (pill.status) {
-                "ok", "queued_on_phone" -> "✓ "
-                "running" -> "⟳ "
-                "pending_confirmation" -> "⏳ "
-                "rejected", "error" -> "✕ "
-                else -> "• "
-            }
-            val textColorRes = when (pill.status) {
-                "ok", "queued_on_phone" -> R.color.lw_success
-                "running", "pending_confirmation" -> R.color.lw_accent
-                "rejected", "error" -> R.color.lw_error
-                else -> R.color.lw_text_primary
-            }
-            val chip = Chip(this).apply {
-                text = prefix + pill.summary
-                textSize = 12f
-                isCheckable = false
-                isClickable = false
-                chipBackgroundColor = chipBg
-                chipStrokeWidth = 0f
-                setTextColor(ContextCompat.getColor(context, textColorRes))
-                setEnsureMinTouchTargetSize(false)
-            }
-            chipGroup.addView(chip)
+    private fun matchWidthParams(): LinearLayout.LayoutParams = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT
+    )
+
+    private fun newTurnWrapper(isFirst: Boolean): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        layoutParams = matchWidthParams().apply {
+            if (!isFirst) topMargin = dpToPx(12)
         }
+    }
+
+    private fun buildUserBubble(prompt: String): View {
+        val userBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_status_pill)
+            setPadding(dpToPx(14), dpToPx(8), dpToPx(14), dpToPx(8))
+            layoutParams = matchWidthParams().apply { bottomMargin = dpToPx(6) }
+        }
+        val userLabel = TextView(this).apply {
+            text = getString(R.string.assistant_you_label)
+            textSize = 11f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(ContextCompat.getColor(context, R.color.lw_accent))
+        }
+        val userText = TextView(this).apply {
+            text = prompt
+            textSize = 14f
+            setTextColor(ContextCompat.getColor(context, R.color.lw_text_primary))
+        }
+        userBox.addView(userLabel)
+        userBox.addView(userText)
+        return userBox
+    }
+
+    private fun buildReplyBox(content: String, colorRes: Int): TextView = TextView(this).apply {
+        text = content
+        textSize = 15f
+        setTextIsSelectable(true)
+        setLineSpacing(0f, 1.2f)
+        setBackgroundResource(R.drawable.bg_info_panel)
+        setPadding(dpToPx(14), dpToPx(11), dpToPx(14), dpToPx(11))
+        setTextColor(ContextCompat.getColor(context, colorRes))
+        layoutParams = matchWidthParams()
+    }
+
+    private fun buildTimelineCard(startExpanded: Boolean): TimelineViews {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_info_panel)
+            setPadding(dpToPx(12), dpToPx(9), dpToPx(12), dpToPx(9))
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            layoutParams = matchWidthParams().apply { bottomMargin = dpToPx(6) }
+        }
+        val header = TextView(this).apply {
+            textSize = 12f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(ContextCompat.getColor(context, R.color.lw_accent))
+        }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dpToPx(4), 0, 0)
+            visibility = visibleIf(startExpanded)
+        }
+        card.addView(header)
+        card.addView(container)
+        return TimelineViews(card, header, container).apply { expanded = startExpanded }
+    }
+
+    private fun toggleTimeline(views: TimelineViews) {
+        views.expanded = !views.expanded
+        views.container.visibility = visibleIf(views.expanded)
+        syncTimelineViews(views, views.entries)
+    }
+
+    private fun updateTimelineHeader(views: TimelineViews) {
+        val headerRes = if (views.expanded) {
+            R.string.assistant_timeline_header_expanded
+        } else {
+            R.string.assistant_timeline_header_collapsed
+        }
+        views.header.text = getString(headerRes, AgentTimeline.toolCount(views.entries))
+    }
+
+    /** Brings the card's rows in line with [entries], touching only rows that changed. */
+    private fun syncTimelineViews(views: TimelineViews, entries: List<TimelineEntry>) {
+        views.entries = entries
+        views.card.visibility = visibleIf(entries.isNotEmpty())
+        updateTimelineHeader(views)
+        if (!views.expanded) return
+        for ((index, entry) in entries.withIndex()) {
+            renderTimelineEntryAt(views, index, entry)
+        }
+        val extraRows = (views.rendered.size - entries.size).coerceAtLeast(0)
+        repeat(extraRows) {
+            views.rendered.removeAt(views.rendered.lastIndex)
+            views.container.removeViewAt(views.container.childCount - 1)
+        }
+    }
+
+    private fun renderTimelineEntryAt(views: TimelineViews, index: Int, entry: TimelineEntry) {
+        val existing = views.rendered.getOrNull(index)
+        if (existing != null && bindTimelineEntry(existing, entry)) return
+        val fresh = createTimelineEntryView(entry)
+        if (existing != null) {
+            views.container.removeViewAt(index)
+            views.container.addView(fresh, index)
+            views.rendered[index] = fresh
+        } else {
+            views.container.addView(fresh)
+            views.rendered.add(fresh)
+        }
+    }
+
+    private fun createTimelineEntryView(entry: TimelineEntry): TextView {
+        val view = when (entry) {
+            is TimelineEntry.Thinking -> TextView(this).apply {
+                tag = TIMELINE_TAG_THINKING
+                textSize = 12f
+                typeface = Typeface.MONOSPACE
+                setTextColor(ContextCompat.getColor(context, R.color.lw_text_secondary))
+                setPadding(0, dpToPx(4), 0, dpToPx(4))
+            }
+            is TimelineEntry.Tool -> TextView(this).apply {
+                tag = TIMELINE_TAG_TOOL
+                textSize = 12f
+                setBackgroundResource(R.drawable.bg_status_pill)
+                setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dpToPx(3)
+                    bottomMargin = dpToPx(3)
+                }
+            }
+        }
+        bindTimelineEntry(view, entry)
+        return view
+    }
+
+    /** Updates a rendered row in place; false when the row is the wrong kind and must be replaced. */
+    private fun bindTimelineEntry(view: View, entry: TimelineEntry): Boolean {
+        val textView = view as? TextView ?: return false
+        return when (entry) {
+            is TimelineEntry.Thinking -> {
+                if (view.tag != TIMELINE_TAG_THINKING) return false
+                val text = entry.text.trim()
+                if (textView.text.toString() != text) {
+                    textView.text = text
+                }
+                true
+            }
+            is TimelineEntry.Tool -> {
+                if (view.tag != TIMELINE_TAG_TOOL) return false
+                textView.text = toolStatusPrefix(entry.status) + entry.summary
+                textView.setTextColor(ContextCompat.getColor(this, toolStatusColor(entry.status)))
+                true
+            }
+        }
+    }
+
+    private fun toolStatusPrefix(status: String): String = when (status) {
+        "ok", "queued_on_phone" -> "✓ "
+        "running" -> "⟳ "
+        "pending_confirmation" -> "⏳ "
+        "rejected", "error" -> "✕ "
+        else -> "• "
+    }
+
+    private fun toolStatusColor(status: String): Int = when (status) {
+        "ok", "queued_on_phone" -> R.color.lw_success
+        "running", "pending_confirmation" -> R.color.lw_accent
+        "rejected", "error" -> R.color.lw_error
+        else -> R.color.lw_text_primary
     }
 
     private fun adjustAgentScrollHeightAndScrollToBottom(scrollToBottom: Boolean = true) {
@@ -1467,6 +1408,9 @@ class AssistantActivity : AppCompatActivity() {
         private const val LOCAL_TARGET_ID = "local-phone"
         private const val MAX_AGENT_SCROLL_HEIGHT_DP = 360
         private const val MAX_PREVIEW_BASE64_CHARS = 600_000
+        private const val FOLLOW_SCROLL_THRESHOLD_DP = 48
+        private const val TIMELINE_TAG_THINKING = "timeline_thinking"
+        private const val TIMELINE_TAG_TOOL = "timeline_tool"
         private val AHK_QUICK_TOKENS = listOf(
             "{Enter}",
             "{Tab}",
