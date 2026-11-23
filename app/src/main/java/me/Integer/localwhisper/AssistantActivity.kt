@@ -16,6 +16,7 @@ import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.ImageView
@@ -38,6 +39,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.Integer.localwhisper.databinding.ActivityAssistantBinding
+import org.json.JSONObject
 import java.io.File
 import java.util.Locale
 
@@ -576,6 +578,12 @@ class AssistantActivity : AppCompatActivity() {
         val targetClientId = if (isLocalTargetSelected()) null else selectedClient?.id
         activeJob?.cancel()
         activeJob = lifecycleScope.launch {
+            var phoneActionResult: JSONObject? = null
+            var updatedPhoneScreen: JSONObject? = null
+            if (approved && pending.phoneAction != null) {
+                phoneActionResult = runPhoneUiActionWithOverlayPeek(pending.phoneAction)
+                updatedPhoneScreen = LocalTypingService.capturePhoneScreenSnapshot()
+            }
             val result = api.confirmAgentActionStream(
                 baseUrl = baseUrl,
                 sessionId = sessionId,
@@ -583,6 +591,8 @@ class AssistantActivity : AppCompatActivity() {
                 approved = approved,
                 clientId = targetClientId,
                 initialTimeline = resumeTimeline,
+                phoneScreen = updatedPhoneScreen,
+                phoneActionResult = phoneActionResult,
                 onProgress = { progress ->
                     withContext(Dispatchers.Main) {
                         updateLiveStreamingTurn(progress)
@@ -696,9 +706,22 @@ class AssistantActivity : AppCompatActivity() {
 
         renderChatHistoryThread(savedSession, expandLastTimeline = true)
 
-        // Bind Confirmation Gate card if a high-impact PC tool is waiting approval (Idea #10)
         val pending = response.pendingConfirmation
+        if (pending != null && pending.autoExecute && pending.phoneAction != null) {
+            // Automatic phone actions (such as scroll_phone) execute immediately and resume.
+            submitAgentConfirmation(approved = true)
+            return
+        }
+
+        // Bind Confirmation Gate card if a PC or phone action is waiting approval
         if (pending != null) {
+            binding.confirmationTitleText.setText(
+                if (pending.phoneAction != null) {
+                    R.string.assistant_confirm_phone_title
+                } else {
+                    R.string.assistant_confirm_title
+                }
+            )
             binding.confirmationDescriptionText.text = pending.description
             bindConfirmationPreview(pending)
             binding.confirmationGateCard.visibility = View.VISIBLE
@@ -710,10 +733,32 @@ class AssistantActivity : AppCompatActivity() {
         setUiState(UiState.AGENT_RESULT)
     }
 
-    /** Shows the PC screenshot with the click target outlined, when the server sent one. */
+    /** Briefly hides the overlay sheet while executing a phone tap/type/scroll on the underlying app. */
+    private suspend fun runPhoneUiActionWithOverlayPeek(phoneAction: JSONObject): JSONObject {
+        window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+        binding.overlayScrim.alpha = 0f
+        binding.sheetCard.alpha = 0f
+        return try {
+            delay(120L)
+            LocalTypingService.executePhoneUiAction(phoneAction)
+        } finally {
+            binding.overlayScrim.alpha = 1f
+            binding.sheetCard.alpha = 1f
+            window.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+        }
+    }
+
+    /** Shows the PC or phone screenshot with the click target outlined, when available. */
     private fun bindConfirmationPreview(pending: PendingConfirmationInfo) {
         val imageView = binding.confirmationPreviewImage
-        val bitmap = decodePreviewImage(pending.previewImageB64)
+        val b64 = if (pending.previewImageB64.isNotBlank()) {
+            pending.previewImageB64
+        } else if (pending.phoneAction != null) {
+            LocalTypingService.renderPhoneTargetPreviewBase64(pending.phoneAction)
+        } else {
+            ""
+        }
+        val bitmap = decodePreviewImage(b64)
         imageView.setImageBitmap(bitmap)
         imageView.visibility = visibleIf(bitmap != null)
         if (bitmap == null) {

@@ -61,8 +61,12 @@ data class PendingConfirmationInfo(
     val confirmationId: String,
     val toolName: String,
     val description: String,
-    /** JPEG of the PC window with the click target outlined; empty when not available. */
-    val previewImageB64: String = ""
+    /** JPEG of the PC or phone window with the click target outlined; empty when not available. */
+    val previewImageB64: String = "",
+    /** Non-null when this action runs on the Android phone (click_phone_element, type_into_phone_element, scroll_phone). */
+    val phoneAction: JSONObject? = null,
+    /** True for automatic phone actions like scroll_phone that run without pausing for user approval. */
+    val autoExecute: Boolean = false
 )
 
 data class AgentResponse(
@@ -293,7 +297,9 @@ class LocalWhisperApi {
         sessionId: String,
         confirmationId: String,
         approved: Boolean,
-        clientId: String?
+        clientId: String?,
+        phoneScreen: JSONObject? = null,
+        phoneActionResult: JSONObject? = null
     ): Result<AgentResponse> = withContext(Dispatchers.IO) {
         val payload = JSONObject().apply {
             put("session_id", sessionId)
@@ -301,6 +307,12 @@ class LocalWhisperApi {
             put("approved", approved)
             if (!clientId.isNullOrBlank()) {
                 put("client_id", clientId)
+            }
+            if (phoneScreen != null) {
+                put("phone_screen", phoneScreen)
+            }
+            if (phoneActionResult != null) {
+                put("phone_action_result", phoneActionResult)
             }
         }
         val request = Request.Builder()
@@ -370,6 +382,8 @@ class LocalWhisperApi {
         approved: Boolean,
         clientId: String?,
         initialTimeline: List<TimelineEntry> = emptyList(),
+        phoneScreen: JSONObject? = null,
+        phoneActionResult: JSONObject? = null,
         onProgress: suspend (AgentStreamProgress) -> Unit
     ): Result<AgentResponse> = withContext(Dispatchers.IO) {
         val payload = JSONObject().apply {
@@ -378,6 +392,12 @@ class LocalWhisperApi {
             put("approved", approved)
             if (!clientId.isNullOrBlank()) {
                 put("client_id", clientId)
+            }
+            if (phoneScreen != null) {
+                put("phone_screen", phoneScreen)
+            }
+            if (phoneActionResult != null) {
+                put("phone_action_result", phoneActionResult)
             }
         }
         val request = Request.Builder()
@@ -549,7 +569,9 @@ class LocalWhisperApi {
                     confirmationId = confId,
                     toolName = pendingObj.optString("tool_name", ""),
                     description = pendingObj.optString("description", ""),
-                    previewImageB64 = pendingObj.optString("preview_image_jpeg_b64", "")
+                    previewImageB64 = pendingObj.optString("preview_image_jpeg_b64", ""),
+                    phoneAction = pendingObj.optJSONObject("phone_action"),
+                    autoExecute = pendingObj.optBoolean("auto_execute", false)
                 )
             } else null
         } else null

@@ -108,6 +108,7 @@
     <string name="assistant_timeline_header_collapsed">Thinking · %1$d tool steps (tap to view)</string>
     <string name="assistant_timeline_header_expanded">Thinking · %1$d tool steps (tap to hide)</string>
     <string name="assistant_confirm_title">Approval required for PC action</string>
+    <string name="assistant_confirm_phone_title">Approval required for phone action</string>
     <string name="assistant_confirm_approve">Approve</string>
     <string name="assistant_confirm_reject">Reject</string>
     <string name="assistant_confirm_preview_title">What will be clicked</string>

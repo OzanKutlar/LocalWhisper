@@ -603,8 +603,70 @@ class ConfirmationResumeTests(unittest.IsolatedAsyncioTestCase):
             approved=True,
         )
         self.assertEqual(resumed.status, "completed")
-        self.assertEqual(resumed.android_actions, [])
+        self.assertEqual(result.android_actions, [])
         self.assertEqual(hub.calls[-1][0], "manage_pc_app")
+
+
+class PhoneClickAndScrollTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.phone_screen = {
+            "accessibility_enabled": True,
+            "phone_snapshot_id": "ps1",
+            "app_name": "Gmail",
+            "package_name": "com.google.android.gm",
+            "ui_elements": [
+                {
+                    "element_id": "p1",
+                    "role": "Button",
+                    "content_desc": "Compose",
+                    "clickable": True,
+                    "editable": False,
+                    "focused": False,
+                    "bounds": {"left": 760, "top": 2000, "right": 1020, "bottom": 2140},
+                }
+            ],
+        }
+
+    async def test_phone_click_gates_and_resumes_with_updated_phone_screen(self) -> None:
+        hub = FakeClientHub()
+        scripted = [
+            tool_message("click_phone_element", '{"element_id": "p1"}'),
+            {"role": "assistant", "content": "Tapped Compose on your phone."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        first = await engine.run_turn("Tap compose on my phone", phone_screen=self.phone_screen)
+
+        self.assertEqual(first.status, "confirmation_required")
+        pending = first.pending_confirmation
+        self.assertEqual(pending["description"], 'Click on p1 ("Compose") in Gmail?')
+        self.assertFalse(pending["auto_execute"])
+        self.assertEqual(pending["phone_action"]["action"], "click")
+        self.assertEqual(pending["phone_action"]["element_id"], "p1")
+
+        after_screen = dict(self.phone_screen, phone_snapshot_id="ps2")
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=pending["confirmation_id"],
+            approved=True,
+            phone_screen=after_screen,
+            phone_action_result={"ok": True, "clicked": True},
+        )
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual([c["status"] for c in resumed.tool_calls], ["ok"])
+
+    async def test_phone_scroll_sets_auto_execute_flag(self) -> None:
+        hub = FakeClientHub()
+        scripted = [
+            tool_message("scroll_phone", '{"direction": "down"}'),
+            {"role": "assistant", "content": "Scrolled down."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        first = await engine.run_turn("Scroll down on my phone", phone_screen=self.phone_screen)
+
+        self.assertEqual(first.status, "confirmation_required")
+        pending = first.pending_confirmation
+        self.assertTrue(pending["auto_execute"])
+        self.assertEqual(pending["phone_action"]["action"], "scroll")
 
 
 if __name__ == "__main__":

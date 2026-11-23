@@ -70,6 +70,8 @@ class AgentConfirmRequest(BaseModel):
     confirmation_id: str = Field(..., min_length=1, max_length=64)
     approved: bool
     client_id: str | None = Field(default=None)
+    phone_screen: dict[str, object] | None = Field(default=None)
+    phone_action_result: dict[str, object] | None = Field(default=None)
 
 
 def create_app(
@@ -278,6 +280,8 @@ def create_app(
                 confirmation_id=request.confirmation_id,
                 approved=request.approved,
                 client_id=request.client_id,
+                phone_screen=request.phone_screen,
+                phone_action_result=request.phone_action_result,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -313,6 +317,8 @@ def create_app(
                     confirmation_id=request.confirmation_id,
                     approved=request.approved,
                     client_id=request.client_id,
+                    phone_screen=request.phone_screen,
+                    phone_action_result=request.phone_action_result,
                 ):
                     yield json.dumps(event) + "\n"
             except Exception as exc:
