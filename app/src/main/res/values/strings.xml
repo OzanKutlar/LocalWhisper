@@ -83,7 +83,7 @@
     <string name="assistant_state_error">Setup needed</string>
 
     <!-- Voice overlay: subtitle and target -->
-    <string name="assistant_model_hint">Running Qwen3-ASR-1.7B on CUDA…</string>
+    <string name="assistant_model_hint">Transcribing on your server…</string>
     <string name="assistant_agent_thinking_hint">Reasoning &amp; calling tools…</string>
     <string name="assistant_agent_paused_hint">Tap resume to continue or stop to cancel</string>
     <string name="assistant_target_format">Target: %1$s</string>

@@ -15,6 +15,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import uvicorn
@@ -29,6 +30,12 @@ if str(SERVER_DIR) not in sys.path:
 from agent_engine import AgentEngine  # noqa: E402
 from asr_engine import AsrEngine  # noqa: E402
 from client_hub import ClientDispatchError, ClientHub, NoClientConnectedError  # noqa: E402
+from llm_asr_engine import LlmAsrEngine  # noqa: E402
+from llm_capabilities import (  # noqa: E402
+    LlmCapabilities,
+    choose_asr_backend,
+    probe_llm_capabilities,
+)
 from updater import (  # noqa: E402
     CREATE_NEW_PROCESS_GROUP,
     CREATE_NO_WINDOW,
@@ -51,6 +58,8 @@ DEFAULT_DEVICE = os.environ.get("LOCALWHISPER_DEVICE", "cuda:0")
 DEFAULT_LLM_BASE_URL = os.environ.get("LOCALWHISPER_LLM_BASE_URL", "http://127.0.0.1:34501/v1")
 DEFAULT_LLM_MODEL = os.environ.get("LOCALWHISPER_LLM_MODEL", "llama-server")
 DEFAULT_LLM_API_KEY = os.environ.get("LOCALWHISPER_LLM_API_KEY", "local")
+ASR_BACKENDS = ("auto", "local", "llm")
+DEFAULT_ASR_BACKEND = os.environ.get("LOCALWHISPER_ASR_BACKEND", "auto")
 UPDATE_EXIT_CODE = 42
 SUPERVISED_ENV_VAR = "LOCALWHISPER_SUPERVISED"
 
@@ -79,9 +88,62 @@ class AgentConfirmRequest(BaseModel):
     rejection_reason: str | None = Field(default=None, max_length=2000)
 
 
+@dataclass
+class AsrSelection:
+    """ASR engine picked at startup; filled in by the app lifespan."""
+
+    engine: AsrEngine | LlmAsrEngine | None = None
+    backend: str = "pending"
+    modalities: dict[str, bool] = field(default_factory=dict)
+
+
+def _create_asr_engine(
+    backend: str,
+    caps: LlmCapabilities | None,
+    model_id: str,
+    device: str,
+    llm_base_url: str,
+    llm_model: str,
+    llm_api_key: str,
+) -> AsrEngine | LlmAsrEngine:
+    if backend == "llm":
+        LOGGER.info("ASR backend: llama-server (audio input supported); Qwen3-ASR will not be loaded")
+        return LlmAsrEngine(
+            base_url=llm_base_url,
+            model=llm_model,
+            api_key=llm_api_key,
+            display_name=caps.model_name if caps is not None else "",
+        )
+    LOGGER.info("ASR backend: local %s on %s", model_id, device)
+    return AsrEngine(model_id=model_id, device=device)
+
+
+def build_asr_engine(
+    requested_backend: str,
+    model_id: str,
+    device: str,
+    llm_base_url: str,
+    llm_model: str,
+    llm_api_key: str,
+) -> tuple[AsrEngine | LlmAsrEngine, str, dict[str, bool]]:
+    """Probes llama-server (unless 'local'), picks the ASR backend and loads it. Blocking."""
+    requested = str(requested_backend or "").strip().lower()
+    if requested not in ASR_BACKENDS:
+        raise ValueError(f"Unknown ASR backend '{requested_backend}'; use one of {', '.join(ASR_BACKENDS)}")
+    caps: LlmCapabilities | None = None
+    if requested != "local":
+        caps = probe_llm_capabilities(llm_base_url, llm_api_key)
+        LOGGER.info("llama-server modalities: %s (%s)", caps.modalities(), caps.detail)
+    backend = choose_asr_backend(requested, caps)
+    engine = _create_asr_engine(backend, caps, model_id, device, llm_base_url, llm_model, llm_api_key)
+    engine.load()
+    return engine, backend, caps.modalities() if caps is not None else {}
+
+
 def create_app(
     model_id: str = DEFAULT_MODEL,
     device: str = DEFAULT_DEVICE,
+    asr_backend: str = DEFAULT_ASR_BACKEND,
     llm_base_url: str = DEFAULT_LLM_BASE_URL,
     llm_model: str = DEFAULT_LLM_MODEL,
     llm_api_key: str = DEFAULT_LLM_API_KEY,
@@ -90,7 +152,7 @@ def create_app(
     relaunch_args: list[str] | None = None,
     on_update_exit: Callable[[], None] | None = None,
 ) -> FastAPI:
-    asr_engine = AsrEngine(model_id=model_id, device=device)
+    asr_selection = AsrSelection()
     client_hub = ClientHub()
     agent_engine = AgentEngine(
         client_hub=client_hub,
@@ -104,20 +166,40 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        await asyncio.to_thread(asr_engine.load)
+        engine, backend, modalities = await asyncio.to_thread(
+            build_asr_engine,
+            asr_backend,
+            model_id,
+            device,
+            llm_base_url,
+            llm_model,
+            llm_api_key,
+        )
+        asr_selection.engine = engine
+        asr_selection.backend = backend
+        asr_selection.modalities = modalities
         yield
+
+    def current_asr_engine() -> AsrEngine | LlmAsrEngine:
+        engine = asr_selection.engine
+        if engine is None:
+            raise HTTPException(status_code=503, detail="ASR backend is still starting")
+        return engine
 
     app = FastAPI(title="LocalWhisper Server", version="1.0.0", lifespan=lifespan)
 
     @app.get("/api/health")
     async def health() -> dict[str, object]:
         clients = await client_hub.list_clients()
+        engine = asr_selection.engine
         return {
             "status": "ok",
-            "model": asr_engine.model_id,
+            "model": engine.model_id if engine is not None else "starting",
             "agent_model": agent_engine.llm_model,
-            "device": asr_engine.device,
-            "gpu_name": asr_engine.gpu_name,
+            "device": engine.device if engine is not None else "unknown",
+            "gpu_name": engine.gpu_name if engine is not None else "unknown",
+            "asr_backend": asr_selection.backend,
+            "llm_modalities": asr_selection.modalities,
             "connected_clients": clients,
         }
 
@@ -237,9 +319,10 @@ def create_app(
         audio: UploadFile = File(...),
         language: str | None = Form(default=None),
     ) -> dict[str, object]:
+        engine = current_asr_engine()
         audio_bytes = await audio.read()
         try:
-            result = await asyncio.to_thread(asr_engine.transcribe_bytes, audio_bytes, language)
+            result = await asyncio.to_thread(engine.transcribe_bytes, audio_bytes, language)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -407,6 +490,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Qwen ASR model ID")
     parser.add_argument("--device", default=DEFAULT_DEVICE, help="CUDA device (default: cuda:0)")
     parser.add_argument(
+        "--asr-backend",
+        choices=ASR_BACKENDS,
+        default=DEFAULT_ASR_BACKEND,
+        help=(
+            "auto: use llama-server for ASR when its model accepts audio, else load the local model; "
+            "local: always load the local ASR model; llm: always use llama-server (default: auto)"
+        ),
+    )
+    parser.add_argument(
         "--llm-base-url",
         default=DEFAULT_LLM_BASE_URL,
         help="OpenAI-compatible LLM base URL for Agent mode (default: http://127.0.0.1:34501/v1)",
@@ -439,6 +531,7 @@ def main() -> None:
     app = create_app(
         model_id=args.model,
         device=args.device,
+        asr_backend=args.asr_backend,
         llm_base_url=args.llm_base_url,
         llm_model=args.llm_model,
         llm_api_key=args.llm_api_key,

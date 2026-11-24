@@ -1,4 +1,8 @@
-"""CUDA-backed Qwen3-ASR engine for LocalWhisper server."""
+"""CUDA-backed Qwen3-ASR engine for LocalWhisper server.
+
+torch and qwen_asr are imported inside load(), so a server that transcribes with
+llama-server never imports them.
+"""
 
 from __future__ import annotations
 
@@ -7,21 +11,13 @@ import os
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from typing import Any
 
-import torch
-from qwen_asr import Qwen3ASRModel
+from asr_types import MAX_AUDIO_BYTES, MIN_AUDIO_BYTES, TranscriptionResult, validate_audio_bytes
 
 LOGGER = logging.getLogger("localwhisper.asr")
-MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MB upper bound (~13 minutes of 16 kHz mono WAV)
-MIN_AUDIO_BYTES = 44  # Standard WAV header size
 
-
-@dataclass(frozen=True)
-class TranscriptionResult:
-    text: str
-    language: str
-    duration_ms: int
+__all__ = ["AsrEngine", "TranscriptionResult", "MAX_AUDIO_BYTES", "MIN_AUDIO_BYTES"]
 
 
 class AsrEngine:
@@ -36,11 +32,14 @@ class AsrEngine:
         self.model_id = model_id
         self.device = device
         self.gpu_name = "unknown"
-        self._model: Qwen3ASRModel | None = None
+        self._model: Any = None
         self._inference_lock = threading.Lock()
 
     def load(self) -> None:
         """Verifies CUDA availability and loads the Qwen3-ASR model onto GPU."""
+        import torch  # Heavy imports: only the local ASR backend needs them.
+        from qwen_asr import Qwen3ASRModel
+
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "CUDA is not available in this Python environment. "
@@ -74,7 +73,7 @@ class AsrEngine:
         """Transcribes uploaded WAV audio bytes synchronously on CUDA."""
         if self._model is None:
             raise RuntimeError("ASR model has not been loaded yet")
-        self._validate_audio_bytes(audio_bytes)
+        validate_audio_bytes(audio_bytes)
 
         normalized_language = language.strip() if language else None
         temp_path = self._write_temp_wav(audio_bytes)
@@ -84,10 +83,12 @@ class AsrEngine:
             self._cleanup_file(temp_path)
 
     def _run_inference(self, wav_path: str, language: str | None) -> TranscriptionResult:
-        assert self._model is not None
+        model = self._model
+        if model is None:
+            raise RuntimeError("ASR model has not been loaded yet")
         start_time = time.perf_counter()
         with self._inference_lock:
-            results = self._model.transcribe(audio=wav_path, language=language)
+            results = model.transcribe(audio=wav_path, language=language)
         duration_ms = int((time.perf_counter() - start_time) * 1000)
 
         text, detected_language = self._extract_result(results)
@@ -112,14 +113,6 @@ class AsrEngine:
         text = str(getattr(first, "text", first)).strip()
         lang = str(getattr(first, "language", "") or "").strip()
         return text, lang
-
-    @staticmethod
-    def _validate_audio_bytes(audio_bytes: bytes) -> None:
-        size = len(audio_bytes)
-        if size < MIN_AUDIO_BYTES:
-            raise ValueError(f"Audio payload too small ({size} bytes)")
-        if size > MAX_AUDIO_BYTES:
-            raise ValueError(f"Audio payload exceeds {MAX_AUDIO_BYTES} byte limit")
 
     @staticmethod
     def _write_temp_wav(audio_bytes: bytes) -> str:

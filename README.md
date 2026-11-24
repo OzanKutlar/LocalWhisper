@@ -3,7 +3,7 @@
 A local voice-to-keystroke system made of three components:
 
 1. **Android Client (`app/`, package `me.Integer.localwhisper`)** — Triggered via Android's Digital Assistant button, records 16 kHz WAV audio with a live waveform overlay, displays the transcription for editing (with quick-insert AutoHotkey key chips like `{Enter}`), and sends the final text to the Server PC.
-2. **Server PC (`server/`)** — Python FastAPI server running **`Qwen/Qwen3-ASR-1.7B`** on CUDA (`cuda:0`, `bfloat16`, designed for RTX 5060 Ti) that transcribes audio and dispatches confirmed keystrokes to connected PC clients over WebSocket.
+2. **Server PC (`server/`)** — Python FastAPI server that transcribes audio and dispatches confirmed keystrokes to connected PC clients over WebSocket. Transcription uses your llama-server model when it accepts audio input, otherwise **`Qwen/Qwen3-ASR-1.7B`** on CUDA (`cuda:0`, `bfloat16`, designed for RTX 5060 Ti).
 3. **PC Client (`pc_client/`)** — Windows client (can run on the same machine as the server or on a separate PC) that executes incoming text via **AutoHotkey v1.1** interpreted `Send,` syntax.
 
 ---
@@ -29,6 +29,18 @@ python server/main.py --host 0.0.0.0 --port 8765 --model Qwen/Qwen3-ASR-1.7B --d
 ```
 
 > Make sure Windows Firewall allows inbound TCP on port `8765` on your private LAN.
+
+### ASR backend selection
+
+At startup the server asks your llama-server (`--llm-base-url`) for its input modalities via `GET /props`. If the loaded model accepts **audio** (llama-server started with an audio-capable `--mmproj`), transcription is sent to llama-server and Qwen3-ASR is never loaded. Otherwise Qwen3-ASR is loaded on CUDA as before.
+
+- `--asr-backend auto` (default): probe llama-server and pick automatically.
+- `--asr-backend local`: always load Qwen3-ASR, without probing.
+- `--asr-backend llm`: always use llama-server; startup fails if the model has no audio input.
+
+The environment variable `LOCALWHISPER_ASR_BACKEND` sets the same default.
+
+Start llama-server **before** LocalWhisper. The probe takes at most a few seconds and falls back to Qwen3-ASR if llama-server is not reachable. Check what it reports with `curl http://127.0.0.1:34501/props` and look for `"modalities": {"audio": true}`. The app's **Test connection** row shows which ASR is active.
 
 ---
 
