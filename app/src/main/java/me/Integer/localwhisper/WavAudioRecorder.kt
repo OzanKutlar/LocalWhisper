@@ -71,25 +71,34 @@ class WavAudioRecorder(
         return Result.success(Unit)
     }
 
+    /**
+     * Stops capture and waits until the WAV header has been written. Also safe after the
+     * max-duration limit already ended capture on the audio thread, and when called twice.
+     */
     fun stop(): File? {
-        if (!isRecording.compareAndSet(true, false)) {
-            return outputFile
-        }
-        val recorder = audioRecord
+        isRecording.set(false)
+        finishCapture()
+        return outputFile
+    }
+
+    private fun finishCapture() {
+        val recorder = audioRecord ?: return
         try {
-            recorder?.stop()
+            recorder.stop()
         } catch (_: IllegalStateException) {
             // Recorder may already have stopped
         }
-        try {
-            recordingThread?.join(THREAD_JOIN_TIMEOUT_MS)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
+        val thread = recordingThread
+        if (thread != null && thread !== Thread.currentThread()) {
+            try {
+                thread.join(THREAD_JOIN_TIMEOUT_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
         }
-        recorder?.release()
+        recorder.release()
         audioRecord = null
         recordingThread = null
-        return outputFile
     }
 
     fun cancel() {

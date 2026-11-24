@@ -87,6 +87,7 @@ class AssistantActivity : AppCompatActivity() {
     private lateinit var binding: ActivityAssistantBinding
     private lateinit var prefs: ServerPreferences
     private lateinit var sessionStore: AgentSessionStore
+    private lateinit var retainedRecording: RetainedRecording
     private val api = LocalWhisperApi()
     private var recorder: WavAudioRecorder? = null
     private var activeJob: Job? = null
@@ -126,6 +127,7 @@ class AssistantActivity : AppCompatActivity() {
         setContentView(binding.root)
         prefs = ServerPreferences(this)
         sessionStore = AgentSessionStore(this)
+        retainedRecording = RetainedRecording(this)
         AgentRuntimeManager.init(applicationContext)
         AgentRuntimeManager.setActivityVisible(true)
         agentSessionId = sessionStore.resolveInitialSessionId(prefs.agentResumeTimeoutSeconds)
@@ -245,6 +247,14 @@ class AssistantActivity : AppCompatActivity() {
         binding.interjectSendButton.setOnClickListener {
             performTapHaptic(it)
             submitInterjection()
+        }
+        binding.retryRecordingButton.setOnClickListener {
+            performTapHaptic(it)
+            retryRetainedTranscription()
+        }
+        binding.discardRecordingButton.setOnClickListener {
+            performTapHaptic(it)
+            discardRetainedRecording()
         }
     }
 
@@ -621,14 +631,33 @@ class AssistantActivity : AppCompatActivity() {
         stopTimer()
         binding.waveformView.setActive(false)
         val wavFile = recorder?.stop()
+        // The recorder no longer owns the file, so a later cancel() cannot delete a recording kept for retry.
+        recorder = null
         if (wavFile == null || !wavFile.isFile) {
             showError(getString(R.string.assistant_no_audio))
             setUiState(UiState.REVIEW)
             return
         }
+        val kept = retainedRecording.retain(wavFile)
+        when {
+            kept != null -> transcribeAudioFile(kept, retained = true)
+            // Keeping it failed: transcribe the temporary file once, as before.
+            wavFile.isFile -> transcribeAudioFile(wavFile, retained = false)
+            else -> {
+                showError(getString(R.string.assistant_no_audio))
+                setUiState(UiState.REVIEW)
+            }
+        }
+    }
 
+    /**
+     * Sends [audio] to the server. A retained recording is deleted only after a successful
+     * transcription; after an error or cancellation it stays available for a retry.
+     */
+    private fun transcribeAudioFile(audio: File, retained: Boolean) {
         val baseUrl = prefs.buildBaseUrl()
         if (baseUrl == null) {
+            if (!retained) deleteRecording(audio)
             showSetupRequired(getString(R.string.invalid_server_config))
             return
         }
@@ -639,9 +668,13 @@ class AssistantActivity : AppCompatActivity() {
 
         activeJob?.cancel()
         activeJob = lifecycleScope.launch {
-            val result = api.transcribeAudio(baseUrl, wavFile, prefs.language)
-            deleteRecording(wavFile)
+            val result = try {
+                api.transcribeAudio(baseUrl, audio, prefs.language)
+            } finally {
+                if (!retained) deleteRecording(audio)
+            }
             result.onSuccess { response ->
+                if (retained) retainedRecording.discard()
                 binding.transcriptInput.setText(response.text)
                 binding.transcriptInput.setSelection(response.text.length)
                 setUiState(UiState.REVIEW)
@@ -650,6 +683,40 @@ class AssistantActivity : AppCompatActivity() {
                 setUiState(UiState.REVIEW)
             }
         }
+    }
+
+    /** Re-sends the unsent recording; a recording in progress is cancelled first. */
+    private fun retryRetainedTranscription() {
+        val audio = retainedRecording.current()
+        if (audio == null) {
+            showError(getString(R.string.assistant_retry_missing))
+            renderRetryBar(currentState)
+            return
+        }
+        if (currentState == UiState.RECORDING) {
+            stopTimer()
+            binding.waveformView.setActive(false)
+            recorder?.cancel()
+            recorder = null
+        }
+        hideKeyboard()
+        transcribeAudioFile(audio, retained = true)
+    }
+
+    private fun discardRetainedRecording() {
+        retainedRecording.discard()
+        renderRetryBar(currentState)
+    }
+
+    private fun renderRetryBar(state: UiState) {
+        val showable = state == UiState.RECORDING || state == UiState.REVIEW
+        val audio = if (showable) retainedRecording.current() else null
+        binding.retryRecordingBar.visibility = visibleIf(audio != null)
+        if (audio == null) return
+        val durationMs = RetainedRecording.wavDurationMs(audio.length())
+        val seconds = (durationMs + 999L) / 1000L
+        binding.retryRecordingLabel.text =
+            getString(R.string.assistant_unsent_recording_format, formatClock(seconds))
     }
 
     private fun sendTranscript() {
@@ -1338,6 +1405,7 @@ class AssistantActivity : AppCompatActivity() {
         currentState = state
         renderArtwork(state)
         renderBottomSections(state)
+        renderRetryBar(state)
         binding.stateLabel.text = getString(stateLabelRes(state))
         renderSubtitle()
         configureControls(state)

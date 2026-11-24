@@ -156,6 +156,12 @@
     <string name="assistant_send_failed">Failed to send keystrokes</string>
     <string name="assistant_empty_transcript">Enter or dictate some text before sending.</string>
 
+    <!-- Voice overlay: unsent recording -->
+    <string name="assistant_unsent_recording_format">Unsent recording · %1$s</string>
+    <string name="assistant_retry_transcription">Retry</string>
+    <string name="assistant_discard_recording">Discard</string>
+    <string name="assistant_retry_missing">The saved recording is no longer available.</string>
+
     <!-- Local (phone) typing -->
     <string name="local_typing_service_label">LocalWhisper typing</string>
     <string name="local_typing_service_description">Types the text you send to This phone from the LocalWhisper assistant into the text field you were using. It does nothing else.</string>
