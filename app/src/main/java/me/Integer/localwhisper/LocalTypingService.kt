@@ -733,21 +733,57 @@ class LocalTypingService : AccessibilityService() {
         if (elementId.isNotEmpty() && node == null) {
             Log.d(TAG, "No cached node for $elementId in snapshot '$snapshotId'; using tap coordinates")
         }
-        val ok = when (action) {
+        val before = screenFingerprint()
+        val outcome = when (action) {
             "click" -> performClickOnPhone(node, x, y, longPress)
             "type" -> performTypeOnPhone(node, x, y, text, clearFirst)
-            "scroll" -> performScrollOnPhone(node, direction)
-            else -> false
+            "scroll" -> TapOutcome(performScrollOnPhone(node, direction), "scroll", false)
+            else -> TapOutcome(false, "none", false)
         }
 
         delay(PHONE_ACTION_SETTLE_MS)
+        val after = screenFingerprint()
+        val screenChanged: Boolean? = if (before != null && after != null) before != after else null
+        Log.i(
+            TAG,
+            "Phone $action on ${elementId.ifEmpty { "point" }} snapshot='$snapshotId' at ($x,$y): " +
+                "method=${outcome.method} gesture_completed=${outcome.gestureCompleted} " +
+                "ok=${outcome.ok} screen_changed=$screenChanged"
+        )
         runWithOverlayHidden(alwaysHide = true) { captureScreenshotSuspend() }
         captureBestSnapshot()
         return JSONObject().apply {
-            put("ok", ok)
+            put("ok", outcome.ok)
             put("action", action)
             put("element_id", elementId)
+            put("method", outcome.method)
+            put("gesture_completed", outcome.gestureCompleted)
+            if (screenChanged != null) put("screen_changed", screenChanged)
         }
+    }
+
+    /** Cheap hash of what is on screen (package, element labels and bounds); null when unreadable. */
+    private fun screenFingerprint(): Int? {
+        return try {
+            val root = findUnderlyingAppRoot() ?: return null
+            fingerprintOf(buildWindowSnapshot(root, rememberNodes = false))
+        } catch (exc: Exception) {
+            Log.w(TAG, "Could not fingerprint the phone screen", exc)
+            null
+        }
+    }
+
+    private fun fingerprintOf(snapshot: JSONObject): Int {
+        val parts = StringBuilder(snapshot.optString("package_name", ""))
+        snapshot.optJSONObject("focused_input")?.let { parts.append('|').append(it.optString("text", "")) }
+        val elements = snapshot.optJSONArray("ui_elements") ?: return parts.toString().hashCode()
+        for (index in 0 until elements.length()) {
+            val element = elements.optJSONObject(index) ?: continue
+            parts.append('|').append(element.optString("text", ""))
+                .append('/').append(element.optString("content_desc", ""))
+                .append('@').append(element.optJSONObject("bounds")?.toString().orEmpty())
+        }
+        return parts.toString().hashCode()
     }
 
     private suspend fun <T> runWithOverlayHidden(
@@ -765,27 +801,63 @@ class LocalTypingService : AccessibilityService() {
         )
     }
 
+    /** How a phone action was carried out; [method] is reported to the agent and logged. */
+    private data class TapOutcome(val ok: Boolean, val method: String, val gestureCompleted: Boolean)
+
+    /**
+     * Taps with a real touch gesture at the approved point. The accessibility click is only a
+     * fallback, because WebView and custom-drawn apps often accept ACTION_CLICK on a parent
+     * container without anything happening.
+     */
     private suspend fun performClickOnPhone(
         node: AccessibilityNodeInfo?,
         x: Int,
         y: Int,
         longPress: Boolean
-    ): Boolean {
+    ): TapOutcome {
+        val durationMs = if (longPress) LONG_PRESS_GESTURE_MS else TAP_GESTURE_MS
+        if (isOnScreen(x, y) && tapAt(x, y, durationMs)) {
+            return TapOutcome(true, "gesture", true)
+        }
         val nodeAction = if (longPress) {
             AccessibilityNodeInfo.ACTION_LONG_CLICK
         } else {
             AccessibilityNodeInfo.ACTION_CLICK
         }
-        if (node != null && node.refresh() && performNodeOrParentAction(node, nodeAction)) {
-            return true
+        val target = node?.takeIf { it.refresh() }?.let { findClickTarget(it, x, y, longPress) }
+        if (target != null && target.performAction(nodeAction)) {
+            return TapOutcome(true, "node_click", false)
         }
-        if (x > 0 && y > 0) {
-            val durationMs = if (longPress) 550L else 60L
-            return runWithOverlayHidden(tapX = x, tapY = y) {
-                dispatchTapGesture(x.toFloat(), y.toFloat(), durationMs)
+        return TapOutcome(false, "none", false)
+    }
+
+    /**
+     * The node itself when it is clickable, else the nearest clickable ancestor that contains the
+     * tap point and is not much bigger than the node. Never a whole list or WebView.
+     */
+    private fun findClickTarget(
+        node: AccessibilityNodeInfo,
+        x: Int,
+        y: Int,
+        longPress: Boolean
+    ): AccessibilityNodeInfo? {
+        val nodeBounds = Rect()
+        node.getBoundsInScreen(nodeBounds)
+        val nodeArea = (nodeBounds.width().toLong() * nodeBounds.height().toLong()).coerceAtLeast(1L)
+        var current: AccessibilityNodeInfo? = node
+        for (depth in 0 until MAX_CLICK_ANCESTOR_DEPTH) {
+            val candidate = current ?: return null
+            val clickable = if (longPress) candidate.isLongClickable else candidate.isClickable
+            if (clickable) {
+                val bounds = Rect()
+                candidate.getBoundsInScreen(bounds)
+                val area = bounds.width().toLong() * bounds.height().toLong()
+                val containsPoint = x <= 0 || y <= 0 || bounds.contains(x, y)
+                return if (containsPoint && area <= nodeArea * MAX_ANCESTOR_AREA_RATIO) candidate else null
             }
+            current = candidate.parent
         }
-        return false
+        return null
     }
 
     private suspend fun performTypeOnPhone(
@@ -794,26 +866,35 @@ class LocalTypingService : AccessibilityService() {
         y: Int,
         text: String,
         clearFirst: Boolean
-    ): Boolean {
-        if (node != null && node.refresh()) {
-            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (node.isEditable && insertAtCursor(node, text, clearFirst)) {
-                return true
+    ): TapOutcome {
+        val editable = node?.takeIf { it.refresh() && it.isEditable }
+        if (editable != null) {
+            editable.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            if (insertAtCursor(editable, text, clearFirst)) {
+                return TapOutcome(true, "set_text", false)
             }
         }
-        if (x > 0 && y > 0) {
-            runWithOverlayHidden(tapX = x, tapY = y) {
-                dispatchTapGesture(x.toFloat(), y.toFloat(), 60L)
-            }
-            delay(200L)
+        val tapped = isOnScreen(x, y) && tapAt(x, y, TAP_GESTURE_MS)
+        if (tapped) {
+            delay(TYPE_AFTER_TAP_MS)
         }
         val root = findUnderlyingAppRoot()
         val focused = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-        if (focused != null && focused.isEditable) {
-            return insertAtCursor(focused, text, clearFirst)
+        val inserted = focused != null && focused.isEditable && insertAtCursor(focused, text, clearFirst)
+        val method = if (tapped) "gesture" else if (inserted) "focused_field" else "none"
+        return TapOutcome(inserted, method, tapped)
+    }
+
+    /** Real touch at (x, y); our overlay windows are hidden and untouchable so it reaches the app. */
+    private suspend fun tapAt(x: Int, y: Int, durationMs: Long): Boolean {
+        return runWithOverlayHidden(alwaysHide = true) {
+            dispatchTapGesture(x.toFloat(), y.toFloat(), durationMs)
         }
-        return false
+    }
+
+    private fun isOnScreen(x: Int, y: Int): Boolean {
+        val (width, height) = screenSize()
+        return x in 1 until width && y in 1 until height
     }
 
     private suspend fun performScrollOnPhone(
@@ -927,7 +1008,12 @@ class LocalTypingService : AccessibilityService() {
         private const val MAX_CHILDREN_SCANNED = 8
         private const val SNAPSHOT_THROTTLE_MS = 400L
         private const val SCREENSHOT_THROTTLE_MS = 1800L
-        private const val PHONE_ACTION_SETTLE_MS = 350L
+        private const val PHONE_ACTION_SETTLE_MS = 450L
+        private const val TAP_GESTURE_MS = 60L
+        private const val LONG_PRESS_GESTURE_MS = 550L
+        private const val TYPE_AFTER_TAP_MS = 200L
+        private const val MAX_CLICK_ANCESTOR_DEPTH = 6
+        private const val MAX_ANCESTOR_AREA_RATIO = 6L
         private const val MAX_SCREEN_NODES_SCANNED = 600
         private const val BACKGROUND_NODES_SCANNED = 140
         private const val MAX_ELEMENT_CANDIDATES = 400

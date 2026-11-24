@@ -1067,5 +1067,60 @@ class PointTapAndLoopGuardTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class PhoneTapFeedbackTests(unittest.IsolatedAsyncioTestCase):
+    PHONE_SCREEN = {
+        "accessibility_enabled": True,
+        "phone_snapshot_id": "ps21",
+        "app_name": "Obsidian",
+        "package_name": "md.obsidian",
+        "screen_width": 1080,
+        "screen_height": 2400,
+        "ui_elements": [
+            {
+                "element_id": "p1",
+                "role": "TextView",
+                "text": "Chapter 1654",
+                "clickable": False,
+                "bounds": {"left": 40, "top": 600, "right": 700, "bottom": 680},
+            }
+        ],
+    }
+
+    async def _approve_click(self, action_result: dict[str, Any]) -> tuple[Any, str]:
+        scripted = [
+            tool_message("click_phone_element", '{"element_id": "p1"}'),
+            {"role": "assistant", "content": "Checked."},
+        ]
+        engine = FakeAgentEngine(FakeClientHub(), scripted)
+        first = await engine.run_turn("Open chapter 1654", phone_screen=self.PHONE_SCREEN)
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=first.pending_confirmation["confirmation_id"],
+            approved=True,
+            phone_screen=self.PHONE_SCREEN,
+            phone_action_result=action_result,
+        )
+        session = engine._sessions[first.session_id]
+        tool_contents = [m["content"] for m in session.messages if m.get("role") == "tool"]
+        return resumed, tool_contents[-1]
+
+    async def test_unchanged_screen_is_reported_to_the_model(self) -> None:
+        resumed, content = await self._approve_click(
+            {"ok": True, "method": "gesture", "screen_changed": False}
+        )
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual([c["status"] for c in resumed.tool_calls], ["no_change"])
+        self.assertIn("no visible change", resumed.tool_calls[0]["summary"])
+        self.assertIn("did not change", content)
+
+    async def test_changed_screen_is_a_normal_success(self) -> None:
+        resumed, content = await self._approve_click(
+            {"ok": True, "method": "gesture", "screen_changed": True}
+        )
+        self.assertEqual([c["status"] for c in resumed.tool_calls], ["ok"])
+        self.assertNotIn("no visible change", resumed.tool_calls[0]["summary"])
+        self.assertNotIn("warning", content)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1285,6 +1285,28 @@ def describe_point_tap(label: str, app_name: str, text: str = "", long_press: bo
     return f"{verb} {target}{where} (visual match)?"
 
 
+def phone_no_change_hint(tool_name: str) -> str:
+    """Tells the model a phone action was sent but nothing on screen changed."""
+    if tool_name == "scroll_phone":
+        return "The scroll was sent but the phone screen did not change; this list is probably at its end."
+    return (
+        "The tap was sent but the phone screen did not change. Check the 'after' snapshot: if the target "
+        "is still there, try a slightly different box_2d, a long press, or ask the user. Do not repeat the same tap."
+    )
+
+
+def _phone_action_status(ok: bool, no_change: bool) -> str:
+    if not ok:
+        return "error"
+    return "no_change" if no_change else "ok"
+
+
+def _phone_action_label(summary: str, ok: bool, no_change: bool) -> str:
+    if not ok:
+        return f"{summary} (not done)"
+    return f"{summary} (no visible change)" if no_change else summary
+
+
 def build_click_execution_args(arguments: dict[str, Any], resolved: dict[str, Any]) -> dict[str, Any]:
     """Pins an approved click to the exact snapshot element the user saw in the preview."""
     exec_args = dict(arguments)
@@ -2201,20 +2223,28 @@ class AgentEngine:
             if pending.tool_name in PHONE_VISUAL_SCREEN_TOOLS:
                 return self._finalize_phone_screen_capture(session, pending, summary, phone_action_result)
             ok = not (isinstance(phone_action_result, dict) and phone_action_result.get("ok") is False)
+            no_change = (
+                ok
+                and isinstance(phone_action_result, dict)
+                and phone_action_result.get("screen_changed") is False
+            )
             session.tool_records.append(
                 ToolCallRecord(
                     tool=pending.tool_name,
-                    status="ok" if ok else "error",
-                    summary=summary if ok else f"{summary} (not done)",
+                    status=_phone_action_status(ok, no_change),
+                    summary=_phone_action_label(summary, ok, no_change),
                 )
             )
             after_payload = format_phone_screen_payload(session.phone_screen)
-            return {
+            output: dict[str, Any] = {
                 "ok": ok,
                 "phone_action": pending.phone_action,
                 "action_result": phone_action_result or {"ok": ok},
                 "after": after_payload,
             }
+            if no_change:
+                output["warning"] = phone_no_change_hint(pending.tool_name)
+            return output
         return await self._execute_single_tool(
             session,
             pending.tool_name,

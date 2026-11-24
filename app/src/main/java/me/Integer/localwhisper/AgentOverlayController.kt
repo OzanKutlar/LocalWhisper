@@ -705,6 +705,16 @@ class AgentOverlayController(private val service: AccessibilityService) {
         pillRoot?.visibility = vis
         confirmRoot?.visibility = vis
         highlightView?.visibility = vis
+        // An invisible overlay window still catches touches, so it must also stop being touchable.
+        setWindowTouchable(pillRoot, pillParams, !hidden)
+        setWindowTouchable(confirmRoot, confirmParams, !hidden)
+    }
+
+    private fun setWindowTouchable(view: View?, params: WindowManager.LayoutParams?, touchable: Boolean) {
+        if (view == null || params == null) return
+        val notTouchable = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        params.flags = if (touchable) params.flags and notTouchable.inv() else params.flags or notTouchable
+        updateLayoutSafely(view, params)
     }
 
     private fun isPointOverlappingPill(px: Int, py: Int): Boolean {
