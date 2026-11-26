@@ -166,6 +166,17 @@
     <string name="assistant_send_failed">Failed to send keystrokes</string>
     <string name="assistant_empty_transcript">Enter or dictate some text before sending.</string>
 
+    <!-- Voice overlay: server reachability -->
+    <string name="assistant_server_unreachable_format">Cannot reach the server at %1$s</string>
+    <string name="assistant_server_search">Search network</string>
+    <string name="assistant_server_search_again">Search again</string>
+    <string name="assistant_server_searching">Searching the network…</string>
+    <string name="assistant_server_switched_format">Now using %1$s (%2$s)</string>
+    <string name="assistant_server_none_found">No server found on this network</string>
+    <string name="assistant_server_found_many_format">Found %1$d servers on this network</string>
+    <string name="assistant_server_choose">Choose</string>
+    <string name="assistant_server_dismiss">Dismiss</string>
+
     <!-- Voice overlay: unsent recording -->
     <string name="assistant_unsent_recording_format">Unsent recording · %1$s</string>
     <string name="assistant_retry_transcription">Retry</string>

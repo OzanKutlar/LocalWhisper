@@ -443,6 +443,60 @@
             android:textSize="13sp"
             android:visibility="gone" />
 
+        <!-- Server unreachable: shown when the launch ping gets no answer within 1 s -->
+        <LinearLayout
+            android:id="@+id/serverUnreachableBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_info_panel"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="horizontal"
+            android:paddingStart="14dp"
+            android:paddingEnd="4dp"
+            android:visibility="gone">
+
+            <com.google.android.material.progressindicator.CircularProgressIndicator
+                android:id="@+id/serverSearchSpinner"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="10dp"
+                android:indeterminate="true"
+                android:visibility="gone"
+                app:indicatorColor="@color/lw_accent"
+                app:indicatorSize="18dp"
+                app:trackThickness="2dp" />
+
+            <TextView
+                android:id="@+id/serverUnreachableLabel"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:paddingTop="6dp"
+                android:paddingBottom="6dp"
+                android:textColor="@color/lw_text_primary"
+                android:textSize="14sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/dismissServerBarButton"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/assistant_server_dismiss"
+                android:textColor="@color/lw_text_secondary" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/searchServerButton"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/assistant_server_search"
+                android:textColor="@color/lw_accent" />
+        </LinearLayout>
+
         <!-- Unsent recording: kept after a failed transcription so it can be re-sent -->
         <LinearLayout
             android:id="@+id/retryRecordingBar"

@@ -143,24 +143,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showDiscoveredServersDialog(servers: List<DiscoveredServer>) {
-        if (isFinishing || isDestroyed) return
-        val labels = servers.map {
-            getString(R.string.discovery_item_format, it.name, it.host, it.port)
-        }.toTypedArray()
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.discovery_pick_title)
-            .setItems(labels) { _, which ->
-                servers.getOrNull(which)?.let { applyDiscoveredServer(it) }
-            }
-            .setNegativeButton(R.string.dialog_cancel, null)
-            .show()
+        DiscoveredServerPicker.show(this, servers) { applyDiscoveredServer(it) }
     }
 
     private fun applyDiscoveredServer(server: DiscoveredServer) {
-        prefs.serverHost = server.host
-        prefs.serverPort = server.port
-        prefs.serverName = server.name
-        prefs.hasUserSetServer = true
+        prefs.applyDiscoveredServer(server)
         refreshServerRows()
         showDiscoveryStatus(
             getString(R.string.discovery_applied_format, server.name, server.host, server.port),

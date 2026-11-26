@@ -53,6 +53,14 @@ class ServerPreferences(context: Context) {
                 .apply()
         }
 
+    /** Saves a server found by network discovery as the user's chosen server. */
+    fun applyDiscoveredServer(server: DiscoveredServer) {
+        serverHost = server.host
+        serverPort = server.port
+        serverName = server.name
+        hasUserSetServer = true
+    }
+
     fun buildBaseUrl(): String? {
         val host = sanitizeHost(serverHost)
         val port = serverPort

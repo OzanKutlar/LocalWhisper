@@ -116,6 +116,38 @@ class LocalWhisperApi {
         .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
+    /**
+     * True when the server answers /api/health within [timeoutMs]. Never throws: a timeout or
+     * connection error returns false; coroutine cancellation is passed through.
+     */
+    suspend fun ping(baseUrl: String, timeoutMs: Long = PING_TIMEOUT_MS): Boolean = withContext(Dispatchers.IO) {
+        val bounded = timeoutMs.coerceIn(MIN_PING_TIMEOUT_MS, MAX_PING_TIMEOUT_MS)
+        val client = httpClient.newBuilder()
+            .connectTimeout(bounded, TimeUnit.MILLISECONDS)
+            .readTimeout(bounded, TimeUnit.MILLISECONDS)
+            .callTimeout(bounded, TimeUnit.MILLISECONDS)
+            .retryOnConnectionFailure(false)
+            .build()
+        val request = try {
+            Request.Builder().url("$baseUrl/api/health").get().build()
+        } catch (_: IllegalArgumentException) {
+            return@withContext false
+        }
+        val call = client.newCall(request)
+        val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
+            if (cause is CancellationException) {
+                call.cancel()
+            }
+        }
+        try {
+            call.execute().use { response -> response.isSuccessful }
+        } catch (_: IOException) {
+            false
+        } finally {
+            cancelHandle?.dispose()
+        }
+    }
+
     suspend fun checkHealth(baseUrl: String): Result<HealthResponse> = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url("$baseUrl/api/health")
@@ -672,6 +704,9 @@ class LocalWhisperApi {
 
     companion object {
         private const val MAX_STREAM_LINES = 200_000
+        const val PING_TIMEOUT_MS = 1_000L
+        private const val MIN_PING_TIMEOUT_MS = 100L
+        private const val MAX_PING_TIMEOUT_MS = 10_000L
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val AUDIO_WAV_MEDIA_TYPE = "audio/wav".toMediaType()
     }

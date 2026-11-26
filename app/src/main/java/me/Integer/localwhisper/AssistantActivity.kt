@@ -36,6 +36,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.chip.Chip
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -111,6 +112,14 @@ class AssistantActivity : AppCompatActivity() {
     private var isAgentPaused = false
     private var lastConfirmationId: String? = null
     private var interjectHadText = false
+
+    /** State of the bar shown when the saved server did not answer the launch ping. */
+    private enum class ServerBarState { HIDDEN, UNREACHABLE, SEARCHING, SWITCHED, FOUND_MANY, NONE_FOUND }
+
+    private var serverBarState = ServerBarState.HIDDEN
+    private var serverCheckJob: Job? = null
+    private var serverBarHideJob: Job? = null
+    private var foundServers: List<DiscoveredServer> = emptyList()
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private val timerRunnable = object : Runnable {
@@ -256,6 +265,14 @@ class AssistantActivity : AppCompatActivity() {
             performTapHaptic(it)
             discardRetainedRecording()
         }
+        binding.searchServerButton.setOnClickListener {
+            performTapHaptic(it)
+            onServerBarAction()
+        }
+        binding.dismissServerBarButton.setOnClickListener {
+            performTapHaptic(it)
+            dismissServerBar()
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -324,6 +341,7 @@ class AssistantActivity : AppCompatActivity() {
             showSetupRequired(getString(R.string.invalid_server_config))
             return
         }
+        checkServerReachable()
         if (isKeyboardMode) {
             enterKeyboardMode()
             return
@@ -1327,6 +1345,119 @@ class AssistantActivity : AppCompatActivity() {
         }
     }
 
+    // ------------------------------------------------------------ Server reachability
+
+    /** Pings the saved server in the background; recording and typing keep working meanwhile. */
+    private fun checkServerReachable() {
+        val baseUrl = prefs.buildBaseUrl() ?: return
+        serverCheckJob?.cancel()
+        serverCheckJob = lifecycleScope.launch {
+            val reachable = api.ping(baseUrl, LocalWhisperApi.PING_TIMEOUT_MS)
+            if (!reachable) {
+                showServerUnreachable()
+            }
+        }
+    }
+
+    private fun showServerUnreachable() {
+        val address = "${prefs.serverHost}:${prefs.serverPort}"
+        renderServerBar(
+            ServerBarState.UNREACHABLE,
+            getString(R.string.assistant_server_unreachable_format, address)
+        )
+    }
+
+    private fun onServerBarAction() {
+        when (serverBarState) {
+            ServerBarState.UNREACHABLE, ServerBarState.NONE_FOUND -> searchForServer()
+            ServerBarState.FOUND_MANY -> showServerPicker()
+            ServerBarState.HIDDEN, ServerBarState.SEARCHING, ServerBarState.SWITCHED -> Unit
+        }
+    }
+
+    private fun searchForServer() {
+        if (serverBarState == ServerBarState.SEARCHING) return
+        serverCheckJob?.cancel()
+        renderServerBar(ServerBarState.SEARCHING, getString(R.string.assistant_server_searching))
+        serverCheckJob = lifecycleScope.launch {
+            val servers = try {
+                ServerDiscovery.discover(this@AssistantActivity, prefs.serverPort)
+            } catch (exc: CancellationException) {
+                throw exc
+            } catch (exc: Exception) {
+                Log.w(TAG, "Server discovery failed", exc)
+                emptyList()
+            }
+            onServerSearchFinished(servers)
+        }
+    }
+
+    /** One server: use it right away. Several: let the user pick. None: offer another search. */
+    private fun onServerSearchFinished(servers: List<DiscoveredServer>) {
+        foundServers = servers
+        when {
+            servers.isEmpty() -> renderServerBar(
+                ServerBarState.NONE_FOUND,
+                getString(R.string.assistant_server_none_found)
+            )
+            servers.size == 1 -> switchToServer(servers[0])
+            else -> {
+                renderServerBar(
+                    ServerBarState.FOUND_MANY,
+                    getString(R.string.assistant_server_found_many_format, servers.size)
+                )
+                showServerPicker()
+            }
+        }
+    }
+
+    private fun showServerPicker() {
+        DiscoveredServerPicker.show(this, foundServers) { switchToServer(it) }
+    }
+
+    private fun switchToServer(server: DiscoveredServer) {
+        prefs.applyDiscoveredServer(server)
+        renderServerBar(
+            ServerBarState.SWITCHED,
+            getString(R.string.assistant_server_switched_format, server.name, server.host)
+        )
+        refreshClientsInBackground()
+        serverBarHideJob?.cancel()
+        serverBarHideJob = lifecycleScope.launch {
+            delay(SERVER_BAR_HIDE_DELAY_MS)
+            if (serverBarState == ServerBarState.SWITCHED) {
+                renderServerBar(ServerBarState.HIDDEN, "")
+            }
+        }
+    }
+
+    private fun dismissServerBar() {
+        serverCheckJob?.cancel()
+        serverBarHideJob?.cancel()
+        renderServerBar(ServerBarState.HIDDEN, "")
+    }
+
+    private fun renderServerBar(state: ServerBarState, message: String) {
+        serverBarState = state
+        binding.serverUnreachableBar.visibility = visibleIf(state != ServerBarState.HIDDEN)
+        if (state == ServerBarState.HIDDEN) return
+        binding.serverUnreachableLabel.text = message
+        binding.serverSearchSpinner.visibility = visibleIf(state == ServerBarState.SEARCHING)
+        val actionRes: Int? = when (state) {
+            ServerBarState.UNREACHABLE -> R.string.assistant_server_search
+            ServerBarState.NONE_FOUND -> R.string.assistant_server_search_again
+            ServerBarState.FOUND_MANY -> R.string.assistant_server_choose
+            ServerBarState.HIDDEN, ServerBarState.SEARCHING, ServerBarState.SWITCHED -> null
+        }
+        binding.searchServerButton.visibility = visibleIf(actionRes != null)
+        if (actionRes != null) {
+            binding.searchServerButton.setText(actionRes)
+        }
+        binding.dismissServerBarButton.visibility = visibleIf(
+            state != ServerBarState.SEARCHING && state != ServerBarState.SWITCHED
+        )
+    }
+
     // ------------------------------------------------------------ PC clients
 
     private fun refreshClientsInBackground() {
@@ -1730,6 +1861,7 @@ class AssistantActivity : AppCompatActivity() {
         private const val FOLLOW_SCROLL_THRESHOLD_DP = 48
         private const val TIMELINE_TAG_THINKING = "timeline_thinking"
         private const val TIMELINE_TAG_TOOL = "timeline_tool"
+        private const val SERVER_BAR_HIDE_DELAY_MS = 2_500L
         private val AHK_QUICK_TOKENS = listOf(
             "{Enter}",
             "{Tab}",
