@@ -132,7 +132,6 @@ class JarvisSheetWindow(QWidget):
         self.setFixedWidth(SHEET_WIDTH)
 
         self._bridge = _UiBridge(self)
-        self._connect_signals()
 
         self._ui_state = "review"
         self._runtime_phase = "idle"
@@ -160,6 +159,7 @@ class JarvisSheetWindow(QWidget):
         self._record_timer.timeout.connect(self._update_recording_clock)
 
         self._build_ui()
+        self._connect_signals()
 
     def hwnd(self) -> int:
         return int(self.winId())
