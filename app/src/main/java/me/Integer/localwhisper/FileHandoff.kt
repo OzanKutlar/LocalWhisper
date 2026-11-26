@@ -187,12 +187,12 @@ object FileHandoff {
             }
         }
 
-        valscreenshotsOnly = which == "latest_screenshot"
-        val found = findLatestMediaImage(context, valscreenshotsOnly)
+        val screenshotsOnly = which == "latest_screenshot"
+        val found = findLatestMediaImage(context, screenshotsOnly)
             ?: return JSONObject().apply {
                 put("ok", false)
                 put("reason", "file_not_found")
-                put("error", "No matching ${if (valscreenshotsOnly) "screenshot" else "photo"} found on this phone.")
+                put("error", "No matching ${if (screenshotsOnly) "screenshot" else "photo"} found on this phone.")
             }
         return uploadUriToPc(context, found.first, found.second, clientId)
     }
