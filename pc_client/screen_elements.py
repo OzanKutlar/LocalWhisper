@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import difflib
 import itertools
+import json
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -31,6 +33,7 @@ PREVIEW_MIN_H = 260
 PREVIEW_MAX_H = 420
 PREVIEW_BOX_SCALE_X = 3.2
 PREVIEW_BOX_SCALE_Y = 4.5
+BOX_2D_SCALE = 1000.0
 
 
 @dataclass(frozen=True)
@@ -343,4 +346,141 @@ def compute_zoomed_preview_region(
         "Y": center_y - crop_h // 2,
         "W": crop_w,
         "H": crop_h,
+    }
+
+
+@dataclass(frozen=True)
+class ScreenshotFrame:
+    """Screen region (physical pixels) shown by the newest PC screenshot the model has seen."""
+
+    region: dict[str, int]
+    hwnd: int
+    window_rect: dict[str, int] | None
+    captured_at: float
+
+
+class FrameMemo:
+    """Remembers the newest screenshot frame so box_2d targets can be mapped back onto the screen."""
+
+    def __init__(self) -> None:
+        self._frame: ScreenshotFrame | None = None
+        self._lock = threading.Lock()
+
+    def remember(self, frame: ScreenshotFrame) -> None:
+        with self._lock:
+            self._frame = frame
+
+    def latest(self) -> ScreenshotFrame | None:
+        with self._lock:
+            return self._frame
+
+    def clear(self) -> None:
+        with self._lock:
+            self._frame = None
+
+
+def frame_staleness_reason(
+    frame: ScreenshotFrame,
+    current_rect: dict[str, int] | None,
+    now: float,
+    ttl_s: float = SNAPSHOT_TTL_S,
+) -> str | None:
+    """Why a screenshot frame can no longer be used for box_2d targets, or None when it is fresh."""
+    age_s = now - frame.captured_at
+    if age_s > ttl_s:
+        return f"The latest PC screenshot is {int(age_s)}s old (limit {int(ttl_s)}s). Call inspect_pc_screen again."
+    if frame.hwnd == 0 or frame.window_rect is None:
+        return None
+    if current_rect is None:
+        return "The window from the latest PC screenshot is no longer open. Call inspect_pc_screen again."
+    if not rects_match(frame.window_rect, current_rect):
+        return "The window moved or resized since the latest PC screenshot. Call inspect_pc_screen again."
+    return None
+
+
+def parse_box_2d(raw_box: Any) -> tuple[float, float, float, float] | None:
+    """Parses a box_2d [y1, x1, y2, x2] in 0-1000 units; None when malformed."""
+    value = raw_box
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(value, dict):
+        value = value.get("box_2d")
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    numbers: list[float] = []
+    for item in value:
+        number = _box_number(item)
+        if number is None:
+            return None
+        numbers.append(number)
+    return numbers[0], numbers[1], numbers[2], numbers[3]
+
+
+def _box_number(item: Any) -> float | None:
+    if isinstance(item, bool):
+        return None
+    try:
+        number = float(item)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0.0 or number > BOX_2D_SCALE:
+        return None
+    return number
+
+
+def _scale_to_pixels(value: float, size: int) -> int:
+    return max(0, min(int(round(value / BOX_2D_SCALE * size)), size - 1))
+
+
+def _region_size(region: Any) -> tuple[int, int, int, int] | None:
+    if not isinstance(region, dict):
+        return None
+    try:
+        x, y, width, height = (int(region.get(key, 0)) for key in ("x", "y", "width", "height"))
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return x, y, width, height
+
+
+def box_2d_to_region_point(raw_box: Any, region: Any) -> dict[str, Any]:
+    """Maps a normalized box_2d [y1, x1, y2, x2] onto a screen region; the point is the box center."""
+    size = _region_size(region)
+    if size is None:
+        return {
+            "ok": False,
+            "reason": "no_screenshot",
+            "message": "No PC screenshot to measure box_2d against. Call inspect_pc_screen first.",
+        }
+    parsed = parse_box_2d(raw_box)
+    if parsed is None:
+        return {
+            "ok": False,
+            "reason": "bad_box",
+            "message": "box_2d must be four numbers [y1, x1, y2, x2] between 0 and 1000.",
+        }
+    region_x, region_y, region_w, region_h = size
+    y1, x1, y2, x2 = parsed
+    top, bottom = min(y1, y2), max(y1, y2)
+    left, right = min(x1, x2), max(x1, x2)
+    if bottom <= top or right <= left:
+        return {
+            "ok": False,
+            "reason": "empty_box",
+            "message": "box_2d has zero width or height. Give the full box around the target.",
+        }
+    px_left = _scale_to_pixels(left, region_w)
+    px_top = _scale_to_pixels(top, region_h)
+    width = max(1, _scale_to_pixels(right, region_w) - px_left)
+    height = max(1, _scale_to_pixels(bottom, region_h) - px_top)
+    return {
+        "ok": True,
+        "x": region_x + min(px_left + width // 2, region_w - 1),
+        "y": region_y + min(px_top + height // 2, region_h - 1),
+        "box": {"x": region_x + px_left, "y": region_y + px_top, "w": width, "h": height},
+        "box_2d": [int(round(top)), int(round(left)), int(round(bottom)), int(round(right))],
     }

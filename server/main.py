@@ -30,6 +30,11 @@ if str(SERVER_DIR) not in sys.path:
 from agent_engine import AgentEngine  # noqa: E402
 from asr_engine import AsrEngine  # noqa: E402
 from client_hub import ClientDispatchError, ClientHub, NoClientConnectedError  # noqa: E402
+from discovery import (  # noqa: E402
+    DEFAULT_DISCOVERY_PORT as DISCOVERY_PORT_FALLBACK,
+    default_server_name,
+    start_discovery_responder,
+)
 from llm_asr_engine import LlmAsrEngine  # noqa: E402
 from llm_capabilities import (  # noqa: E402
     LlmCapabilities,
@@ -60,6 +65,9 @@ DEFAULT_LLM_MODEL = os.environ.get("LOCALWHISPER_LLM_MODEL", "llama-server")
 DEFAULT_LLM_API_KEY = os.environ.get("LOCALWHISPER_LLM_API_KEY", "local")
 ASR_BACKENDS = ("auto", "local", "llm")
 DEFAULT_ASR_BACKEND = os.environ.get("LOCALWHISPER_ASR_BACKEND", "auto")
+DEFAULT_DISCOVERY_PORT = int(
+    os.environ.get("LOCALWHISPER_DISCOVERY_PORT", str(DISCOVERY_PORT_FALLBACK))
+)
 UPDATE_EXIT_CODE = 42
 SUPERVISED_ENV_VAR = "LOCALWHISPER_SUPERVISED"
 
@@ -151,8 +159,11 @@ def create_app(
     bind_port: int = DEFAULT_PORT,
     relaunch_args: list[str] | None = None,
     on_update_exit: Callable[[], None] | None = None,
+    discovery_port: int = DEFAULT_DISCOVERY_PORT,
+    server_name: str | None = None,
 ) -> FastAPI:
     asr_selection = AsrSelection()
+    display_name = (server_name or "").strip() or default_server_name()
     client_hub = ClientHub()
     agent_engine = AgentEngine(
         client_hub=client_hub,
@@ -166,19 +177,32 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        engine, backend, modalities = await asyncio.to_thread(
-            build_asr_engine,
-            asr_backend,
-            model_id,
-            device,
-            llm_base_url,
-            llm_model,
-            llm_api_key,
-        )
-        asr_selection.engine = engine
-        asr_selection.backend = backend
-        asr_selection.modalities = modalities
-        yield
+        # Discovery starts first so the phone can find the server while the ASR model loads.
+        discovery_transport = None
+        if 0 < discovery_port <= 65535:
+            discovery_transport = await start_discovery_responder(
+                port=discovery_port,
+                name=display_name,
+                http_port=bind_port,
+                backend_getter=lambda: asr_selection.backend,
+            )
+        try:
+            engine, backend, modalities = await asyncio.to_thread(
+                build_asr_engine,
+                asr_backend,
+                model_id,
+                device,
+                llm_base_url,
+                llm_model,
+                llm_api_key,
+            )
+            asr_selection.engine = engine
+            asr_selection.backend = backend
+            asr_selection.modalities = modalities
+            yield
+        finally:
+            if discovery_transport is not None:
+                discovery_transport.close()
 
     def current_asr_engine() -> AsrEngine | LlmAsrEngine:
         engine = asr_selection.engine
@@ -200,6 +224,7 @@ def create_app(
             "gpu_name": engine.gpu_name if engine is not None else "unknown",
             "asr_backend": asr_selection.backend,
             "llm_modalities": asr_selection.modalities,
+            "server_name": display_name,
             "connected_clients": clients,
         }
 
@@ -513,6 +538,17 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_LLM_API_KEY,
         help="API key for the LLM endpoint if required",
     )
+    parser.add_argument(
+        "--discovery-port",
+        type=int,
+        default=DEFAULT_DISCOVERY_PORT,
+        help="UDP port the Android app uses to find this server on the LAN (default: 8766)",
+    )
+    parser.add_argument(
+        "--no-discovery",
+        action="store_true",
+        help="Do not answer LAN discovery broadcasts from the Android app",
+    )
     return parser.parse_args()
 
 
@@ -539,6 +575,7 @@ def main() -> None:
         bind_port=args.port,
         relaunch_args=sys.argv[1:],
         on_update_exit=_request_update_exit,
+        discovery_port=0 if args.no_discovery else args.discovery_port,
     )
     config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
     server = uvicorn.Server(config)

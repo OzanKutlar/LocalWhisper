@@ -18,8 +18,12 @@ from urllib.parse import urlparse
 
 from screen_elements import (
     MAX_ELEMENTS,
+    FrameMemo,
     ScreenSnapshot,
+    ScreenshotFrame,
     SnapshotCache,
+    box_2d_to_region_point,
+    frame_staleness_reason,
     build_elements,
     clamp_offset,
     click_point,
@@ -72,11 +76,15 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 WM_GETTEXT = 0x000D
 WM_GETTEXTLENGTH = 0x000E
 GA_ROOT = 2
+SM_CXSCREEN = 0
+SM_CYSCREEN = 1
 DPI_AWARENESS_CONTEXT_PER_MONITOR_V2 = -4
 MOUSE_BUTTONS = {"left": "Left", "right": "Right"}
 
 # Newest OCR snapshots, shared by the inspect, click, type and scroll tools on this PC.
 SNAPSHOTS = SnapshotCache()
+# Screen region shown by the newest screenshot the model saw; box_2d targets are measured on it.
+FRAMES = FrameMemo()
 
 IGNORED_WINDOW_CLASSES = frozenset(
     {
@@ -186,6 +194,8 @@ def dispatch_pc_tool(
         return run_type_into_element(arguments, ahk_exe, send_mode, human_typing, ahk_sender)
     if tool_name == "scroll_pc":
         return run_scroll_pc(arguments, ahk_exe)
+    if tool_name == "move_pc_mouse":
+        return run_move_pc_mouse(arguments, ahk_exe)
     raise ValueError(f"Unsupported PC tool: {tool_name}")
 
 
@@ -428,6 +438,7 @@ def run_inspect_pc_screen(arguments: dict[str, Any]) -> dict[str, Any]:
     )
     result["screenshot_status"] = shot_status
     if shot_status == "ok" and b64:
+        _remember_frame(bounds, target_hwnd if use_window_bounds else 0)
         title = str(target.get("title", "")) if target else ""
         label = title or "(untitled)"
         if not use_window_bounds:
@@ -530,6 +541,37 @@ def _screenshot_region(bounds: dict[str, int] | None) -> dict[str, int]:
     }
 
 
+def _remember_frame(bounds: dict[str, int] | None, hwnd: int) -> None:
+    """Records which screen region the model's newest PC screenshot shows, for box_2d targets."""
+    params = _screenshot_region(bounds)
+    window_rect: dict[str, int] | None = None
+    if params["W"] > 0 and params["H"] > 0:
+        region = {"x": params["X"], "y": params["Y"], "width": params["W"], "height": params["H"]}
+        if hwnd and isinstance(bounds, dict):
+            window_rect = {key: int(bounds.get(key, 0)) for key in ("x", "y", "width", "height")}
+    else:
+        width, height = _primary_screen_size()
+        if width <= 0 or height <= 0:
+            return
+        region = {"x": 0, "y": 0, "width": width, "height": height}
+        hwnd = 0
+    FRAMES.remember(
+        ScreenshotFrame(
+            region=region,
+            hwnd=int(hwnd) if window_rect is not None else 0,
+            window_rect=window_rect,
+            captured_at=time.monotonic(),
+        )
+    )
+
+
+def _primary_screen_size() -> tuple[int, int]:
+    if not _is_windows():
+        return 0, 0
+    user32 = ctypes.windll.user32
+    return int(user32.GetSystemMetrics(SM_CXSCREEN) or 0), int(user32.GetSystemMetrics(SM_CYSCREEN) or 0)
+
+
 def _capture_encoded_jpeg(
     mode: str,
     base_params: dict[str, Any],
@@ -599,6 +641,8 @@ def run_capture_pc_screenshot(arguments: dict[str, Any]) -> dict[str, Any]:
     if status != "ok":
         return {"ok": False, "error": status}
 
+    frame_hwnd = int(target["_hwnd_int"]) if use_window_bounds and target and "_hwnd_int" in target else 0
+    _remember_frame(bounds, frame_hwnd)
     title = str(target.get("title", "")) if target else ""
     label = title or "(untitled)"
     if not use_window_bounds:
@@ -921,21 +965,76 @@ def run_type_into_element(
 
 
 def run_scroll_pc(arguments: dict[str, Any], ahk_exe: Path) -> dict[str, Any]:
-    """Scrolls over an element, or over the center of the foreground window."""
+    """Scrolls the wheel over the aimed spot (element, text, box_2d or point), else the window center."""
     direction = str(arguments.get("direction", "down")).strip().lower()
     if direction not in ("up", "down"):
         raise ValueError("direction must be 'up' or 'down'")
     requested = _optional_int(arguments.get("amount"))
     amount = max(1, min(requested if requested is not None else DEFAULT_SCROLL_NOTCHES, MAX_SCROLL_NOTCHES))
-    if str(arguments.get("element_id", "") or "").strip():
-        target = resolve_click_target(arguments)
-        if not target.get("ok"):
-            return target
-    else:
-        target = _foreground_center_target()
+    target = resolve_pointer_target(arguments, allow_center=True)
+    if not target.get("ok"):
+        return target
     _focus_target_window(ahk_exe, int(target.get("hwnd") or 0))
     _run_mouse_ahk(ahk_exe, ["scroll", str(target["x"]), str(target["y"]), direction, str(amount)])
     return _after_action_result(target, "scrolled")
+
+
+def run_move_pc_mouse(arguments: dict[str, Any], ahk_exe: Path) -> dict[str, Any]:
+    """Moves the cursor over the aimed spot without clicking (hover menus, tooltips)."""
+    target = resolve_pointer_target(arguments, allow_center=False)
+    if not target.get("ok"):
+        return target
+    _run_mouse_ahk(ahk_exe, ["move", str(target["x"]), str(target["y"])])
+    return _after_action_result(target, "moved")
+
+
+def resolve_pointer_target(arguments: dict[str, Any], allow_center: bool) -> dict[str, Any]:
+    """Where a scroll or hover is aimed: element_id/target_text, then box_2d, then x/y, then center."""
+    if _has_text_arg(arguments, "element_id") or _has_text_arg(arguments, "target_text"):
+        return resolve_click_target(arguments)
+    if arguments.get("box_2d") is not None:
+        return _resolve_by_box_2d(arguments)
+    if arguments.get("x") is not None and arguments.get("y") is not None:
+        return _resolve_by_point(arguments)
+    if allow_center:
+        return _foreground_center_target()
+    return _not_done("missing_target", "Provide element_id (preferred), target_text, box_2d, or x and y.")
+
+
+def _has_text_arg(arguments: dict[str, Any], key: str) -> bool:
+    return bool(str(arguments.get(key, "") or "").strip())
+
+
+def _resolve_by_box_2d(arguments: dict[str, Any]) -> dict[str, Any]:
+    frame = FRAMES.latest()
+    if frame is None:
+        return _not_done(
+            "no_screenshot",
+            "No PC screenshot to measure box_2d against. Call inspect_pc_screen or capture_pc_screenshot first.",
+        )
+    current_rect = _get_window_rect(frame.hwnd) if frame.hwnd else None
+    stale = frame_staleness_reason(frame, current_rect, time.monotonic(), SNAPSHOTS.ttl_s)
+    if stale:
+        return _not_done("stale_screenshot", stale)
+    mapped = box_2d_to_region_point(arguments.get("box_2d"), frame.region)
+    if not mapped.get("ok"):
+        return _not_done(str(mapped.get("reason", "bad_box")), str(mapped.get("message", "")))
+    x = int(mapped["x"]) + clamp_offset(arguments.get("offset_x", 0))
+    y = int(mapped["y"]) + clamp_offset(arguments.get("offset_y", 0))
+    hwnd = _root_window_at(x, y)
+    return {
+        "ok": True,
+        "mode": "box_2d",
+        "snapshot_id": "",
+        "element_id": "",
+        "display_text": str(arguments.get("label", "") or "").strip(),
+        "window_title": _get_window_title(hwnd),
+        "hwnd": hwnd,
+        "x": x,
+        "y": y,
+        "box": mapped["box"],
+        "box_2d": mapped["box_2d"],
+    }
 
 
 def _foreground_center_target() -> dict[str, Any]:

@@ -13,6 +13,16 @@
     <string name="section_assistant">Assistant</string>
     <string name="row_server_address">Server address</string>
     <string name="server_address_format">%1$s:%2$d</string>
+    <string name="row_find_server">Find server on network</string>
+    <string name="row_find_server_hint">Search your Wi-Fi for a running LocalWhisper server</string>
+    <string name="discovery_searching">Searching the network…</string>
+    <string name="discovery_none_found">No server found. Check that the server is running and both devices are on the same Wi-Fi.</string>
+    <string name="discovery_found_format">Found %1$d server(s)</string>
+    <string name="discovery_applied_format">Using %1$s (%2$s:%3$d)</string>
+    <string name="discovery_pick_title">Servers on your network</string>
+    <string name="discovery_item_format">%1$s — %2$s:%3$d</string>
+    <string name="discovery_offer_after_failure">Cannot reach the server. Search the network?</string>
+    <string name="discovery_action_search">Search</string>
     <string name="row_language">Language hint</string>
     <string name="row_language_auto">Auto-detect</string>
     <string name="row_test_connection">Test connection</string>

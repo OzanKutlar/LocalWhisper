@@ -20,6 +20,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.snackbar.Snackbar
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.Integer.localwhisper.databinding.ActivityMainBinding
@@ -33,6 +35,7 @@ class MainActivity : AppCompatActivity() {
     private val api = LocalWhisperApi()
     private var isTestingConnection = false
     private var isUpdatingServer = false
+    private var isDiscovering = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,6 +48,7 @@ class MainActivity : AppCompatActivity() {
         setupRows()
         refreshServerRows()
         resetConnectionStatus()
+        maybeAutoDiscover()
     }
 
     override fun onResume() {
@@ -77,6 +81,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupRows() {
         binding.serverAddressRow.setOnClickListener { showServerAddressDialog() }
+        binding.findServerRow.setOnClickListener { discoverServers(autoApplySingle = false) }
         binding.languageRow.setOnClickListener { showLanguageDialog() }
         binding.testConnectionRow.setOnClickListener { testConnection() }
         binding.updateServerRow.setOnClickListener { confirmAndUpdateServer() }
@@ -95,6 +100,85 @@ class MainActivity : AppCompatActivity() {
         val language = prefs.language
         binding.languageValue.text =
             if (language.isEmpty()) getString(R.string.row_language_auto) else language
+    }
+
+    // ------------------------------------------------------------ Discovery
+
+    /** Searches once by itself while the address is still the factory default the user never changed. */
+    private fun maybeAutoDiscover() {
+        if (prefs.hasUserSetServer || prefs.serverHost != ServerPreferences.DEFAULT_HOST) return
+        discoverServers(autoApplySingle = true)
+    }
+
+    private fun discoverServers(autoApplySingle: Boolean) {
+        if (isDiscovering) return
+        isDiscovering = true
+        showDiscoveryStatus(getString(R.string.discovery_searching), R.color.lw_accent)
+        lifecycleScope.launch {
+            val servers = try {
+                ServerDiscovery.discover(this@MainActivity, prefs.serverPort)
+            } catch (exc: CancellationException) {
+                throw exc
+            } catch (exc: Exception) {
+                Log.w(TAG, "Server discovery failed", exc)
+                emptyList()
+            } finally {
+                isDiscovering = false
+            }
+            onDiscoveryFinished(servers, autoApplySingle)
+        }
+    }
+
+    private fun onDiscoveryFinished(servers: List<DiscoveredServer>, autoApplySingle: Boolean) {
+        if (servers.isEmpty()) {
+            showDiscoveryStatus(getString(R.string.discovery_none_found), R.color.lw_error)
+            return
+        }
+        showDiscoveryStatus(getString(R.string.discovery_found_format, servers.size), R.color.lw_success)
+        if (autoApplySingle && servers.size == 1) {
+            applyDiscoveredServer(servers[0])
+        } else {
+            showDiscoveredServersDialog(servers)
+        }
+    }
+
+    private fun showDiscoveredServersDialog(servers: List<DiscoveredServer>) {
+        if (isFinishing || isDestroyed) return
+        val labels = servers.map {
+            getString(R.string.discovery_item_format, it.name, it.host, it.port)
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.discovery_pick_title)
+            .setItems(labels) { _, which ->
+                servers.getOrNull(which)?.let { applyDiscoveredServer(it) }
+            }
+            .setNegativeButton(R.string.dialog_cancel, null)
+            .show()
+    }
+
+    private fun applyDiscoveredServer(server: DiscoveredServer) {
+        prefs.serverHost = server.host
+        prefs.serverPort = server.port
+        prefs.serverName = server.name
+        prefs.hasUserSetServer = true
+        refreshServerRows()
+        showDiscoveryStatus(
+            getString(R.string.discovery_applied_format, server.name, server.host, server.port),
+            R.color.lw_success
+        )
+        resetConnectionStatus()
+        testConnection()
+    }
+
+    private fun offerDiscoveryAfterFailure() {
+        if (isDiscovering || isUpdatingServer || isFinishing) return
+        Snackbar.make(binding.root, R.string.discovery_offer_after_failure, Snackbar.LENGTH_LONG)
+            .setAction(R.string.discovery_action_search) { discoverServers(autoApplySingle = false) }
+            .show()
+    }
+
+    private fun showDiscoveryStatus(text: String, @ColorRes colorRes: Int) {
+        setColoredText(binding.findServerSubtitle, text, colorRes)
     }
 
     // ------------------------------------------------------------ Dialogs
@@ -139,6 +223,7 @@ class MainActivity : AppCompatActivity() {
 
         prefs.serverHost = host
         prefs.serverPort = port
+        prefs.hasUserSetServer = true
         refreshServerRows()
         resetConnectionStatus()
         return true
@@ -183,6 +268,7 @@ class MainActivity : AppCompatActivity() {
                 val reason = exc.message ?: baseUrl
                 showTestResult(getString(R.string.connection_failed, reason), R.color.lw_error)
                 showConnectionStatus(getString(R.string.main_status_offline), R.color.lw_error)
+                offerDiscoveryAfterFailure()
             }
         }
     }

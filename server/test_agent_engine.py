@@ -1122,5 +1122,92 @@ class PhoneTapFeedbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("warning", content)
 
 
+class PointerTargetingTests(unittest.IsolatedAsyncioTestCase):
+    PHONE_SCREEN = {
+        "accessibility_enabled": True,
+        "phone_snapshot_id": "ps5",
+        "app_name": "Obsidian",
+        "package_name": "md.obsidian",
+        "screen_width": 1080,
+        "screen_height": 2400,
+        "ui_elements": [
+            {
+                "element_id": "p1",
+                "role": "RecyclerView",
+                "content_desc": "File tree",
+                "scrollable": True,
+                "bounds": {"left": 0, "top": 200, "right": 400, "bottom": 2200},
+            }
+        ],
+    }
+
+    async def test_pc_scroll_passes_box_2d_through_without_approval(self) -> None:
+        hub = ScriptedClientHub({})
+        scripted = [
+            tool_message(
+                "scroll_pc",
+                '{"direction": "down", "box_2d": [100, 0, 900, 250], "label": "sidebar"}',
+            ),
+            {"role": "assistant", "content": "Scrolled the sidebar."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        result = await engine.run_turn("Scroll the sidebar")
+
+        self.assertEqual(result.status, "completed")
+        name, args = hub.calls[-1]
+        self.assertEqual(name, "scroll_pc")
+        self.assertEqual(args["box_2d"], [100, 0, 900, 250])
+        self.assertIn("sidebar", result.tool_calls[0]["summary"])
+
+    async def test_move_pc_mouse_runs_without_approval(self) -> None:
+        hub = ScriptedClientHub({})
+        scripted = [
+            tool_message("move_pc_mouse", '{"element_id": "e3"}'),
+            {"role": "assistant", "content": "Hovering the menu."},
+        ]
+        engine = FakeAgentEngine(hub, scripted)
+        result = await engine.run_turn("Hover the File menu")
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(hub.calls[-1][0], "move_pc_mouse")
+
+    async def test_phone_scroll_box_2d_maps_to_swipe_point(self) -> None:
+        engine = FakeAgentEngine(
+            FakeClientHub(),
+            [tool_message("scroll_phone", '{"direction": "down", "box_2d": [100, 200, 300, 400]}')],
+        )
+        first = await engine.run_turn("Scroll the drawer", phone_screen=self.PHONE_SCREEN)
+        pending = first.pending_confirmation
+        self.assertTrue(pending["auto_execute"])
+        action = pending["phone_action"]
+        self.assertEqual((action["x"], action["y"]), (324, 480))
+        self.assertEqual(pending["arguments"]["box_2d"], [100, 200, 300, 400])
+
+    async def test_phone_scroll_element_uses_element_center(self) -> None:
+        engine = FakeAgentEngine(
+            FakeClientHub(),
+            [tool_message("scroll_phone", '{"direction": "down", "element_id": "p1"}')],
+        )
+        first = await engine.run_turn("Scroll the file tree", phone_screen=self.PHONE_SCREEN)
+        action = first.pending_confirmation["phone_action"]
+        self.assertEqual((action["x"], action["y"]), (200, 1200))
+
+    async def test_phone_scroll_bad_box_is_reported_without_running(self) -> None:
+        scripted = [
+            tool_message("scroll_phone", '{"direction": "down", "box_2d": [1, 2]}'),
+            {"role": "assistant", "content": "Let me look again."},
+        ]
+        engine = FakeAgentEngine(FakeClientHub(), scripted)
+        result = await engine.run_turn("Scroll the drawer", phone_screen=self.PHONE_SCREEN)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.tool_calls[0]["status"], "error")
+        self.assertIn("bad_box", result.tool_calls[0]["summary"])
+
+    def test_summaries_name_the_scroll_target(self) -> None:
+        self.assertEqual(summarize_tool_call("scroll_pc", {"direction": "down", "element_id": "e12"}), "Scroll down over e12")
+        self.assertEqual(summarize_tool_call("scroll_pc", {"direction": "up"}), "Scroll up")
+        self.assertEqual(summarize_tool_call("move_pc_mouse", {"x": 5, "y": 6}), "Move mouse to (5, 6)")
+        self.assertEqual(summarize_tool_call("scroll_phone", {"direction": "down"}), "Phone Scroll down")
+
+
 if __name__ == "__main__":
     unittest.main()

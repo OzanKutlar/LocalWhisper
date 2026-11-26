@@ -2,6 +2,7 @@
 ; Usage:
 ;   AutoHotkeyU64.exe mouse_action.ahk click <x> <y> [Left|Right] [1|2]
 ;   AutoHotkeyU64.exe mouse_action.ahk scroll <x> <y> [up|down] [notches 1-15]
+;   AutoHotkeyU64.exe mouse_action.ahk move <x> <y>
 ; Coordinates are physical screen pixels (the Python client and OCR script are DPI aware too).
 ; Exit codes: 0 = done, 1 = invalid arguments
 
@@ -55,6 +56,11 @@ if (action = "scroll") {
     MouseMove, %x%, %y%, 0
     Sleep, 30
     Click, %wheel% %amount%
+    ExitApp, 0
+}
+
+if (action = "move") {
+    MouseMove, %x%, %y%, 0
     ExitApp, 0
 }
 

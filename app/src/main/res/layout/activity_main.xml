@@ -68,6 +68,22 @@
                 <View style="@style/Widget.LocalWhisper.Divider" />
 
                 <LinearLayout
+                    android:id="@+id/findServerRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_find_server" />
+
+                    <TextView
+                        android:id="@+id/findServerSubtitle"
+                        style="@style/Widget.LocalWhisper.RowSummary"
+                        android:text="@string/row_find_server_hint" />
+                </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
                     android:id="@+id/languageRow"
                     style="@style/Widget.LocalWhisper.Row">
 

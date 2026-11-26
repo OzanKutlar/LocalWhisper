@@ -737,7 +737,7 @@ class LocalTypingService : AccessibilityService() {
         val outcome = when (action) {
             "click" -> performClickOnPhone(node, x, y, longPress)
             "type" -> performTypeOnPhone(node, x, y, text, clearFirst)
-            "scroll" -> TapOutcome(performScrollOnPhone(node, direction), "scroll", false)
+            "scroll" -> TapOutcome(performScrollOnPhone(node, direction, x, y), "scroll", false)
             else -> TapOutcome(false, "none", false)
         }
 
@@ -897,9 +897,15 @@ class LocalTypingService : AccessibilityService() {
         return x in 1 until width && y in 1 until height
     }
 
+    /**
+     * Scrolls the element's container, else the scrollable panel under (x, y), else the first
+     * scrollable view. The swipe fallback starts at (x, y) when given, so sidebars and drawers scroll.
+     */
     private suspend fun performScrollOnPhone(
         node: AccessibilityNodeInfo?,
-        direction: String
+        direction: String,
+        x: Int,
+        y: Int
     ): Boolean {
         val scrollAction = if (direction == "up") {
             AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
@@ -909,17 +915,62 @@ class LocalTypingService : AccessibilityService() {
         if (node != null && node.refresh() && performNodeOrParentAction(node, scrollAction)) {
             return true
         }
+        val hasPoint = isOnScreen(x, y)
         val root = findUnderlyingAppRoot()
-        val scrollable = if (root != null) findFirstScrollable(root) else null
+        val scrollable = when {
+            root == null -> null
+            hasPoint -> findScrollableAt(root, x, y)
+            else -> findFirstScrollable(root)
+        }
         if (scrollable != null && scrollable.performAction(scrollAction)) {
             return true
         }
-        val metrics = resources.displayMetrics
-        val centerX = metrics.widthPixels / 2f
-        val startY = if (direction == "up") metrics.heightPixels * 0.30f else metrics.heightPixels * 0.72f
-        val endY = if (direction == "up") metrics.heightPixels * 0.72f else metrics.heightPixels * 0.28f
-        return runWithOverlayHidden(tapX = centerX.toInt(), tapY = startY.toInt()) {
-            dispatchSwipeGesture(centerX, startY, centerX, endY, 260L)
+        return swipeForScroll(direction, x, y)
+    }
+
+    /** Smallest visible scrollable node whose bounds contain (x, y), e.g. a sidebar list. Bounded scan. */
+    private fun findScrollableAt(root: AccessibilityNodeInfo, x: Int, y: Int): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        val bounds = Rect()
+        var best: AccessibilityNodeInfo? = null
+        var bestArea = Long.MAX_VALUE
+        var scanned = 0
+        while (queue.isNotEmpty() && scanned < MAX_SCROLL_SEARCH_NODES) {
+            val node = queue.removeFirst()
+            scanned++
+            if (!node.isVisibleToUser) continue
+            node.getBoundsInScreen(bounds)
+            if (!bounds.contains(x, y)) continue
+            val area = bounds.width().toLong() * bounds.height().toLong()
+            if (node.isScrollable && area > 0L && area < bestArea) {
+                best = node
+                bestArea = area
+            }
+            val count = minOf(node.childCount, MAX_CHILDREN_PER_NODE)
+            for (i in 0 until count) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
+        }
+        return best
+    }
+
+    /** Swipe that scrolls content; anchored at (x, y) when on screen, otherwise mid-screen. */
+    private suspend fun swipeForScroll(direction: String, x: Int, y: Int): Boolean {
+        val (width, height) = screenSize()
+        if (width <= 0 || height <= 0) return false
+        val hasPoint = isOnScreen(x, y)
+        val swipeX = if (hasPoint) x.toFloat() else width / 2f
+        val anchorY = if (hasPoint) y.toFloat() else height / 2f
+        val half = height * SWIPE_DISTANCE_FRACTION / 2f
+        val minY = height * SWIPE_EDGE_FRACTION
+        val maxY = height * (1f - SWIPE_EDGE_FRACTION)
+        val lowY = (anchorY + half).coerceIn(minY, maxY)
+        val highY = (anchorY - half).coerceIn(minY, maxY)
+        val (startY, endY) = if (direction == "up") highY to lowY else lowY to highY
+        if (startY == endY) return false
+        return runWithOverlayHidden(tapX = swipeX.toInt(), tapY = startY.toInt()) {
+            dispatchSwipeGesture(swipeX, startY, swipeX, endY, SWIPE_DURATION_MS)
         }
     }
 
@@ -1034,6 +1085,10 @@ class LocalTypingService : AccessibilityService() {
         private const val CAPTURE_PRIMARY_QUALITY = 80
         private const val CAPTURE_FALLBACK_QUALITY = 62
         private const val CAPTURE_MAX_BYTES = 600_000
+        private const val MAX_SCROLL_SEARCH_NODES = 300
+        private const val SWIPE_DISTANCE_FRACTION = 0.44f
+        private const val SWIPE_EDGE_FRACTION = 0.08f
+        private const val SWIPE_DURATION_MS = 260L
 
         private val snapshotCounter = AtomicInteger(0)
 

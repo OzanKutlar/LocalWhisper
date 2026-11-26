@@ -19,6 +19,16 @@ class ServerPreferences(context: Context) {
             prefs.edit().putInt(KEY_SERVER_PORT, safePort).apply()
         }
 
+    /** Display name of the server last picked from network discovery. */
+    var serverName: String
+        get() = prefs.getString(KEY_SERVER_NAME, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_SERVER_NAME, value.trim().take(64)).apply()
+
+    /** True once the user typed an address or picked a discovered server; stops automatic discovery. */
+    var hasUserSetServer: Boolean
+        get() = prefs.getBoolean(KEY_USER_SET_SERVER, false)
+        set(value) = prefs.edit().putBoolean(KEY_USER_SET_SERVER, value).apply()
+
     var language: String
         get() = prefs.getString(KEY_LANGUAGE, "").orEmpty()
         set(value) = prefs.edit().putString(KEY_LANGUAGE, value.trim()).apply()
@@ -61,6 +71,8 @@ class ServerPreferences(context: Context) {
         private const val KEY_KEYBOARD_MODE = "start_in_keyboard_mode"
         private const val KEY_AGENT_MODE = "start_in_agent_mode"
         private const val KEY_AGENT_RESUME_TIMEOUT_S = "agent_resume_timeout_s"
+        private const val KEY_SERVER_NAME = "server_name"
+        private const val KEY_USER_SET_SERVER = "user_set_server"
         const val DEFAULT_HOST = "192.168.1.100"
         const val DEFAULT_PORT = 8765
         const val DEFAULT_AGENT_RESUME_TIMEOUT_S = 5

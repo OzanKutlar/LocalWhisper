@@ -28,7 +28,7 @@ Or with custom options:
 python server/main.py --host 0.0.0.0 --port 8765 --model Qwen/Qwen3-ASR-1.7B --device cuda:0
 ```
 
-> Make sure Windows Firewall allows inbound TCP on port `8765` on your private LAN.
+> Make sure Windows Firewall allows inbound **TCP 8765** and **UDP 8766** on your private LAN. UDP 8766 is only used so the Android app can find the server automatically; change it with `--discovery-port <n>` or turn it off with `--no-discovery`.
 
 ### ASR backend selection
 
@@ -80,7 +80,7 @@ python push.py
 ```
 
 1. Open **LocalWhisper** on your phone.
-2. Enter your Server PC's LAN IP (port `8765`) and tap **Save & Test Connection**.
+2. Tap **Find server on network** to pick your Server PC automatically (this also runs by itself on first launch), or enter its LAN IP (port `8765`) under **Server address**, then tap **Test connection**.
 3. Grant Microphone permission.
 4. Tap **Set as Default Digital Assistant** and select **LocalWhisper**.
 5. Press your phone's Assistant button (or tap **Launch Voice Overlay**), speak, review/edit the transcript (adding `{Enter}`, `{Tab}`, `{^a}`, etc. if desired), and tap **Send to PC**.

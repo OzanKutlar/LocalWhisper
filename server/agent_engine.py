@@ -61,6 +61,7 @@ SNAPSHOT_TOOLS = frozenset(
         "click_screen_element",
         "type_into_element",
         "scroll_pc",
+        "move_pc_mouse",
         "inspect_phone_screen",
         "capture_phone_screenshot",
         "click_phone_element",
@@ -153,6 +154,11 @@ SYSTEM_PROMPT = (
     "click/type/scroll returns an 'after' snapshot of the new screen; use its ids next, because older "
     "snapshots become invalid. Never guess PC coordinates. If a result says `ambiguous` or `no_match`, "
     "choose from its candidates or ask the user; if it says `stale_snapshot`, inspect again.\n"
+    "7b. The mouse wheel scrolls whatever is under the cursor. To scroll a sidebar, panel, list, chat pane "
+    "or dropdown that is not the main content, AIM `scroll_pc` at it: pass an element_id of text inside "
+    "that panel, or its box_2d [y1, x1, y2, x2] (0-1000) on the latest PC screenshot, or x/y. Use "
+    "`move_pc_mouse` to hover (open hover menus, show tooltips) without clicking. On the phone, pass an "
+    "element_id or box_2d to `scroll_phone` the same way so the swipe starts inside that panel.\n"
     "8. To operate an app on the user's Android phone: call `inspect_phone_screen` to get a "
     "phone snapshot with element ids (p1, p2, ...), labels, roles, and screen boxes, plus a "
     "screenshot. Use `click_phone_element` or `type_into_phone_element` with an element_id from the "
@@ -235,6 +241,28 @@ _CLICK_TARGET_PROPERTIES: dict[str, Any] = {
         "description": "Pixels down (negative = up) from the element center.",
         "default": 0,
     },
+}
+
+_BOX_2D_PROPERTY: dict[str, Any] = {
+    "type": "array",
+    "items": {"type": "number"},
+    "minItems": 4,
+    "maxItems": 4,
+    "description": (
+        "[y1, x1, y2, x2] of the target area on the latest screenshot, each 0-1000 "
+        "(top-left origin, y first)."
+    ),
+}
+
+_POINTER_LABEL_PROPERTY: dict[str, Any] = {
+    "type": "string",
+    "description": "Short name of the area you are aiming at, e.g. 'file tree sidebar'.",
+}
+
+_PC_POINTER_TARGET_PROPERTIES: dict[str, Any] = {
+    **_CLICK_TARGET_PROPERTIES,
+    "box_2d": _BOX_2D_PROPERTY,
+    "label": _POINTER_LABEL_PROPERTY,
 }
 
 AGENT_TOOLS: list[dict[str, Any]] = [
@@ -556,8 +584,10 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "scroll_pc",
             "description": (
-                "Scroll with the mouse wheel over an element (element_id) or over the center of the "
-                "foreground window. Returns an 'after' snapshot of the new screen."
+                "Scroll with the mouse wheel. The wheel scrolls whatever is under the cursor, so aim it at "
+                "the panel you want to scroll (a sidebar, list, dropdown or chat pane): use an element_id of "
+                "text inside that panel, target_text, box_2d on the latest PC screenshot, or x/y. With no "
+                "target it scrolls over the center of the foreground window. Returns an 'after' snapshot."
             ),
             "parameters": {
                 "type": "object",
@@ -568,10 +598,25 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                         "description": "Wheel notches (1 to 15).",
                         "default": 3,
                     },
-                    "element_id": _CLICK_TARGET_PROPERTIES["element_id"],
-                    "snapshot_id": _CLICK_TARGET_PROPERTIES["snapshot_id"],
+                    **_PC_POINTER_TARGET_PROPERTIES,
                 },
                 "required": ["direction"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_pc_mouse",
+            "description": (
+                "Move the PC mouse cursor to a spot WITHOUT clicking, e.g. to hover a menu or tooltip or "
+                "to park the cursor over a panel. Aim with element_id (preferred), target_text, box_2d on "
+                "the latest PC screenshot, or x/y. Returns an 'after' snapshot of the screen."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {**_PC_POINTER_TARGET_PROPERTIES},
+                "required": [],
             },
         },
     },
@@ -632,13 +677,17 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Scroll the active app on the user's Android phone screen (runs automatically without "
                 "confirmation). Use direction='down' to scroll down for more content below, or 'up' "
-                "to scroll back up. Returns a fresh 'after' phone snapshot."
+                "to scroll back up. To scroll a sidebar, drawer or inner list, aim it with an element_id "
+                "inside that panel or the panel's box_2d on the latest phone screenshot. Returns a fresh "
+                "'after' phone snapshot."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "direction": {"type": "string", "enum": ["down", "up"]},
                     "element_id": _PHONE_TARGET_PROPERTIES["element_id"],
+                    "box_2d": _BOX_2D_PROPERTY,
+                    "label": _POINTER_LABEL_PROPERTY,
                 },
                 "required": ["direction"],
             },
@@ -1085,10 +1134,14 @@ def summarize_tool_call(tool_name: str, arguments: dict[str, Any]) -> str:
         if tool_name in ("type_into_element", "type_into_phone_element"):
             return f"{prefix}Type into {label}"
         return f"{prefix}{_click_verb(arguments)} {label}"
-    if tool_name == "scroll_pc":
-        return f"Scroll {str(arguments.get('direction', 'down')).strip()}"
-    if tool_name == "scroll_phone":
-        return f"Phone Scroll {str(arguments.get('direction', 'down')).strip()}"
+    if tool_name in ("scroll_pc", "scroll_phone"):
+        prefix = "Phone Scroll" if tool_name == "scroll_phone" else "Scroll"
+        direction = str(arguments.get("direction", "down")).strip()
+        where = _pointer_target_label(arguments)
+        return f"{prefix} {direction} over {where}" if where else f"{prefix} {direction}"
+    if tool_name == "move_pc_mouse":
+        where = _pointer_target_label(arguments)
+        return f"Move mouse to {where}" if where else "Move mouse"
     if tool_name == "capture_pc_screenshot":
         q = str(arguments.get("window_query", "") or "").strip()
         return f"PC Screenshot ('{_shorten(q, 32)}')" if q else "PC Screenshot"
@@ -1248,6 +1301,20 @@ def _click_target_label(arguments: dict[str, Any]) -> str:
     if arguments.get("x") is not None and arguments.get("y") is not None:
         return f"({arguments.get('x')}, {arguments.get('y')})"
     return "screen"
+
+
+def _pointer_target_label(arguments: dict[str, Any]) -> str:
+    """Where a scroll or hover is aimed; '' when it uses the default spot."""
+    label = str(arguments.get("label", "") or "").strip()
+    if label:
+        return f'"{_shorten(label, 40)}"'
+    has_named = any(str(arguments.get(key, "") or "").strip() for key in ("element_id", "target_text"))
+    has_point = arguments.get("x") is not None and arguments.get("y") is not None
+    if has_named or has_point:
+        return _click_target_label(arguments)
+    if arguments.get("box_2d") is not None:
+        return "visual target"
+    return ""
 
 
 def _click_verb(arguments: dict[str, Any]) -> str:
@@ -2067,31 +2134,73 @@ class AgentEngine:
         if direction not in ("up", "down"):
             direction = "down"
         element_id = str(arguments.get("element_id", "") or "").strip().lower()
-        box = None
-        x = 0
-        y = 0
-        if element_id:
-            resolved = resolve_phone_target(session.phone_screen, {"element_id": element_id})
-            if resolved.get("ok"):
-                x = int(resolved.get("x", 0))
-                y = int(resolved.get("y", 0))
-                box = resolved.get("box")
+        label = _shorten(str(arguments.get("label", "") or "").strip(), 60)
+        target = self._resolve_phone_scroll_target(session.phone_screen, element_id, arguments.get("box_2d"))
+        if not target.get("ok"):
+            summary = summarize_tool_call("scroll_phone", {"direction": direction, "label": label})
+            reason = str(target.get("reason", "invalid"))
+            session.tool_records.append(
+                ToolCallRecord(tool="scroll_phone", status="error", summary=f"{summary} ({reason})")
+            )
+            return PreparedCall(
+                arguments=arguments,
+                needs_confirmation=False,
+                early_output={"ok": False, "result": target},
+                marks_screen_read=False,
+            )
+        exec_args: dict[str, Any] = {"direction": direction, "element_id": element_id}
+        if target.get("box_2d") is not None:
+            exec_args["box_2d"] = target["box_2d"]
+        if label:
+            exec_args["label"] = label
         phone_action = {
             "action": "scroll",
             "phone_snapshot_id": str(session.phone_screen.get("phone_snapshot_id", "") or ""),
             "direction": direction,
             "element_id": element_id,
-            "x": x,
-            "y": y,
-            "box": box,
+            "x": int(target.get("x", 0)),
+            "y": int(target.get("y", 0)),
+            "box": target.get("box"),
         }
         return PreparedCall(
-            arguments={"direction": direction, "element_id": element_id},
+            arguments=exec_args,
             needs_confirmation=True,
             description=f"Scrolling phone {direction}…",
             phone_action=phone_action,
             auto_execute=True,
         )
+
+    @staticmethod
+    def _resolve_phone_scroll_target(
+        screen: dict[str, Any],
+        element_id: str,
+        raw_box: Any,
+    ) -> dict[str, Any]:
+        """Where a phone scroll starts: an element center, a visual box_2d, or (0, 0) for the app default."""
+        default = {"ok": True, "x": 0, "y": 0, "box": None, "box_2d": None}
+        if element_id:
+            resolved = resolve_phone_target(screen, {"element_id": element_id})
+            if not resolved.get("ok"):
+                return default
+            return {
+                "ok": True,
+                "x": int(resolved.get("x", 0)),
+                "y": int(resolved.get("y", 0)),
+                "box": resolved.get("box"),
+                "box_2d": None,
+            }
+        if raw_box is None:
+            return default
+        mapped = AgentEngine._map_point_tap(screen, {"box_2d": raw_box})
+        if not mapped.get("ok"):
+            return mapped
+        return {
+            "ok": True,
+            "x": int(mapped["x"]),
+            "y": int(mapped["y"]),
+            "box": mapped["box"],
+            "box_2d": mapped["box_2d"],
+        }
 
     async def _prepare_click_call(
         self,
