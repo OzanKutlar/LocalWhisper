@@ -82,8 +82,6 @@ PHONE_LINK_TOOLS = frozenset(
 )
 SCENE_TOOLS = frozenset({"list_scenes", "run_scene", "save_scene", "delete_scene"})
 MAX_SCENE_APPROVAL_PREVIEW = 3
-# Tools whose results contain untrusted on-screen, clipboard, notification or in-image text.
-SCREEN_READING_TOOLS = SNAPSHOT_TOOLS | IMAGE_TOOLS | frozenset({"read_clipboard", "list_phone_notifications"})
 MAX_CONSECUTIVE_SCREEN_READS = 2
 GATED_IMAGE_TOOLS = frozenset({"read_pc_image"})
 PC_IMAGE_TOOLS = PC_VISUAL_SCREEN_TOOLS | GATED_IMAGE_TOOLS
@@ -105,8 +103,8 @@ SNAPSHOT_TOOLS = frozenset(
         "tap_phone_point",
     }
 )
-# Tools whose results contain untrusted on-screen, clipboard or in-image text.
-SCREEN_READING_TOOLS = SNAPSHOT_TOOLS | IMAGE_TOOLS | frozenset({"read_clipboard"})
+# Tools whose results contain untrusted on-screen, clipboard, notification or in-image text.
+SCREEN_READING_TOOLS = SNAPSHOT_TOOLS | IMAGE_TOOLS | frozenset({"read_clipboard", "list_phone_notifications"})
 GATED_POWER_ACTIONS = frozenset({"sleep", "hibernate", "shutdown", "restart"})
 SNAPSHOT_FIELDS_TO_PRUNE = frozenset(
     {"elements", "after", "candidates", "ui_controls", "visible_windows", "ui_elements", "visible_texts"}
