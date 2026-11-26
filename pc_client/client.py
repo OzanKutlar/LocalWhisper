@@ -351,6 +351,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional ASR language hint for PC voice recordings",
     )
+    parser.add_argument(
+        "--ui-scale",
+        type=float,
+        default=None,
+        help="Size of the PC popup (0.8 to 2.0, default 1.2)",
+    )
     return parser.parse_args()
 
 
@@ -385,6 +391,10 @@ def main() -> int:
                 settings.start_in_agent_mode = False
             if args.language is not None:
                 settings.language = args.language.strip()
+            if args.ui_scale is not None:
+                from overlay.style import clamp_ui_scale  # noqa: PLC0415
+
+                settings.ui_scale = clamp_ui_scale(args.ui_scale)
             settings.save()
 
             def _ws_thread_runner(controller: Any, stop_evt: threading.Event) -> None:

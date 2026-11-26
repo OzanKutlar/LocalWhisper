@@ -10,7 +10,7 @@ import threading
 from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from overlay.api import OverlayServerApi
@@ -19,6 +19,7 @@ from overlay.placement import WorkArea, pick_work_area
 from overlay.session_store import PcSessionStore
 from overlay.settings import OverlaySettings
 from overlay.step_aside import StepAsideCoordinator
+from overlay.style import FONT_FAMILY, set_ui_scale
 from overlay.theme import OverlayPalette, current_palette
 from overlay.widgets.pill import CornerPillWindow
 from overlay.widgets.sheet import JarvisSheetWindow
@@ -218,6 +219,9 @@ def run_with_overlay(
     """Starts the Qt application on the main thread and runs the WebSocket loop on a daemon thread."""
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    scale = set_ui_scale(settings.ui_scale)
+    app.setFont(QFont(FONT_FAMILY, max(9, int(round(10 * scale)))))
+    LOGGER.info("Jarvis popup UI scale: %.2f", scale)
 
     controller = OverlayController(
         server_http_base=server_http_base,

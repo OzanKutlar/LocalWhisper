@@ -9,7 +9,9 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from overlay.placement import WorkArea, compute_initial_pill_position, snap_pill_to_edge
+from overlay.animations import fade_in_window, stop_window_animation
 from overlay.step_aside import exclude_hwnd_from_capture
+from overlay.style import px
 from overlay.theme import OverlayPalette
 
 
@@ -157,11 +159,13 @@ class CornerPillWindow(QWidget):
             self.move(x, y)
             self._placed_once = True
         if not self.isVisible():
-            self.show()
+            fade_in_window(self, self.pos(), duration_ms=180, slide_px=px(8))
             exclude_hwnd_from_capture(self.hwnd())
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
+            stop_window_animation(self)
+            self.setWindowOpacity(1.0)
             self._drag_start_global = event.globalPosition().toPoint()
             self._window_start_pos = self.pos()
             self._dragging = False

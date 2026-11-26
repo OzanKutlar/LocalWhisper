@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from overlay.session_store import default_storage_dir
+from overlay.style import clamp_ui_scale
 
 
 @dataclass
@@ -20,6 +21,7 @@ class OverlaySettings:
     agent_resume_timeout_s: int = 15
     language: str = ""
     selected_target_id: str = ""
+    ui_scale: float = 1.2
 
     @staticmethod
     def load(path: Path | None = None) -> OverlaySettings:
@@ -41,6 +43,7 @@ class OverlaySettings:
             agent_resume_timeout_s=max(0, min(int(raw.get("agent_resume_timeout_s", 15) or 0), 60)),
             language=str(raw.get("language", "") or "").strip(),
             selected_target_id=str(raw.get("selected_target_id", "") or "").strip(),
+            ui_scale=clamp_ui_scale(raw.get("ui_scale", 1.2)),
         )
 
     def save(self, path: Path | None = None) -> None:

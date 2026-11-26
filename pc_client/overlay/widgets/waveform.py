@@ -9,6 +9,7 @@ from PySide6.QtCore import QRectF, QTimer, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
+from overlay.style import px
 from overlay.theme import OverlayPalette
 
 MAX_BARS = 96
@@ -42,7 +43,7 @@ class WaveformWidget(QWidget):
     def __init__(self, palette: OverlayPalette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._palette = palette
-        self.setFixedHeight(96)
+        self.setFixedHeight(px(104))
         self._targets = [0.0] * MAX_BARS
         self._heights = [0.0] * MAX_BARS
         self._velocities = [0.0] * MAX_BARS

@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
 )
 
 from overlay.placement import WorkArea
+from overlay.animations import fade_in_window, fade_out_window
 from overlay.step_aside import exclude_hwnd_from_capture
+from overlay.style import px
 from overlay.theme import OverlayPalette
 
 TOAST_WIDTH = 348
@@ -229,17 +231,16 @@ class PhoneNotificationToastManager:
             self._cards[notif_id] = card
 
         card.bind_data(data)
+        self._relayout()
         if not card.isVisible():
-            card.show()
+            fade_in_window(card, card.pos(), duration_ms=200, slide_px=px(14))
             exclude_hwnd_from_capture(card.hwnd())
             self._on_hwnds_changed()
-        self._relayout()
 
     def close_card(self, notif_id: str) -> None:
         card = self._cards.pop(notif_id, None)
         if card is not None:
-            card.hide()
-            card.deleteLater()
+            fade_out_window(card, duration_ms=160, slide_px=0, on_done=card.deleteLater)
             self._on_hwnds_changed()
             self._relayout()
 
