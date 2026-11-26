@@ -20,7 +20,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 SERVER_DIR = Path(__file__).resolve().parent
@@ -30,6 +30,8 @@ if str(SERVER_DIR) not in sys.path:
 from agent_engine import AgentEngine  # noqa: E402
 from asr_engine import AsrEngine  # noqa: E402
 from client_hub import ClientDispatchError, ClientHub, NoClientConnectedError  # noqa: E402
+from handoff import HandoffError, HandoffStore, save_upload  # noqa: E402
+from phone_hub import PhoneHub  # noqa: E402
 from discovery import (  # noqa: E402
     DEFAULT_DISCOVERY_PORT as DISCOVERY_PORT_FALLBACK,
     default_server_name,
@@ -70,6 +72,12 @@ DEFAULT_DISCOVERY_PORT = int(
 )
 UPDATE_EXIT_CODE = 42
 SUPERVISED_ENV_VAR = "LOCALWHISPER_SUPERVISED"
+DEFAULT_HANDOFF_DIR = SERVER_DIR / "handoff"
+FILE_TARGETS = ("pc", "phone")
+# Uvicorn pings every WebSocket at this interval. Phones never ping on their own (battery), so a
+# long interval keeps their radio asleep; PC clients still ping every 20 s from their side.
+WS_PING_INTERVAL_S = 240.0
+WS_PING_TIMEOUT_S = 60.0
 
 
 class SendKeystrokesRequest(BaseModel):
@@ -84,6 +92,8 @@ class AgentRunRequest(BaseModel):
     history: list[dict[str, str]] | None = Field(default=None)
     phone_screen: dict[str, object] | None = Field(default=None)
     interjection: bool = Field(default=False)
+    origin: str = Field(default="phone", max_length=16)
+    attachments: list[dict[str, object]] | None = Field(default=None)
 
 
 class AgentConfirmRequest(BaseModel):
@@ -161,16 +171,20 @@ def create_app(
     on_update_exit: Callable[[], None] | None = None,
     discovery_port: int = DEFAULT_DISCOVERY_PORT,
     server_name: str | None = None,
+    handoff_dir: Path | None = None,
 ) -> FastAPI:
     asr_selection = AsrSelection()
     display_name = (server_name or "").strip() or default_server_name()
     client_hub = ClientHub()
+    phone_hub = PhoneHub()
+    handoff_store = HandoffStore(handoff_dir or DEFAULT_HANDOFF_DIR)
     agent_engine = AgentEngine(
         client_hub=client_hub,
         llm_base_url=llm_base_url,
         llm_model=llm_model,
         llm_api_key=llm_api_key,
         enable_thinking=True,
+        phone_hub=phone_hub,
     )
     shutting_down_for_update = False
     active_update_id = ""
@@ -226,11 +240,16 @@ def create_app(
             "llm_modalities": asr_selection.modalities,
             "server_name": display_name,
             "connected_clients": clients,
+            "connected_phones": await phone_hub.list_phones(),
         }
 
     @app.get("/api/clients")
     async def list_clients() -> dict[str, object]:
         return {"clients": await client_hub.list_clients()}
+
+    @app.get("/api/phones")
+    async def list_phones() -> dict[str, object]:
+        return {"phones": await phone_hub.list_phones()}
 
     @app.get("/api/update/status")
     async def get_update_status() -> dict[str, object]:
@@ -390,6 +409,8 @@ def create_app(
                 history=request.history,
                 phone_screen=request.phone_screen,
                 interjection=request.interjection,
+                origin=request.origin,
+                attachments=request.attachments,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -428,6 +449,8 @@ def create_app(
                     history=request.history,
                     phone_screen=request.phone_screen,
                     interjection=request.interjection,
+                    origin=request.origin,
+                    attachments=request.attachments,
                 ):
                     yield json.dumps(event) + "\n"
             except Exception as exc:
@@ -455,6 +478,57 @@ def create_app(
                 yield json.dumps({"type": "error", "detail": str(exc)}) + "\n"
 
         return StreamingResponse(_event_generator(), media_type="application/x-ndjson")
+
+    @app.post("/api/files")
+    async def upload_file(
+        file: UploadFile = File(...),
+        target: str = Form(...),
+        client_id: str | None = Form(default=None),
+        source: str = Form(default=""),
+    ) -> dict[str, object]:
+        clean_target = target.strip().lower()
+        if clean_target not in FILE_TARGETS:
+            raise HTTPException(status_code=400, detail="target must be 'pc' or 'phone'")
+        try:
+            stored = await save_upload(handoff_store, file, source=source, target=clean_target)
+        except HandoffError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        except OSError as exc:
+            LOGGER.exception("Storing an uploaded file failed")
+            raise HTTPException(status_code=500, detail=f"Could not store the file: {exc}") from exc
+        offer = stored.offer_payload()
+        if clean_target == "pc":
+            delivered = await client_hub.notify(offer, client_id=client_id)
+        else:
+            delivered = await phone_hub.notify(offer)
+        return {**stored.to_dict(), "delivered": delivered}
+
+    @app.get("/api/files/{file_id}")
+    async def download_file(file_id: str) -> FileResponse:
+        stored = await asyncio.to_thread(handoff_store.get, file_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail="File not found or expired")
+        return FileResponse(stored.data_path, media_type=stored.mime_type, filename=stored.name)
+
+    @app.websocket("/ws/phone")
+    async def phone_websocket(
+        websocket: WebSocket,
+        name: str = Query(default="Phone"),
+    ) -> None:
+        await websocket.accept()
+        phone = await phone_hub.register(websocket, name)
+        try:
+            await websocket.send_text(
+                json.dumps({"type": "welcome", "phone_id": phone.phone_id, "name": phone.name})
+            )
+            async for raw_message in websocket.iter_text():
+                await phone_hub.handle_message(phone.phone_id, raw_message)
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            LOGGER.warning("Phone link error for %s: %s", phone.name, exc)
+        finally:
+            await phone_hub.unregister(phone.phone_id)
 
     @app.websocket("/ws/client")
     async def pc_client_websocket(
@@ -577,7 +651,14 @@ def main() -> None:
         on_update_exit=_request_update_exit,
         discovery_port=0 if args.no_discovery else args.discovery_port,
     )
-    config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
+    config = uvicorn.Config(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        ws_ping_interval=WS_PING_INTERVAL_S,
+        ws_ping_timeout=WS_PING_TIMEOUT_S,
+    )
     server = uvicorn.Server(config)
     server_holder["server"] = server
     server.run()

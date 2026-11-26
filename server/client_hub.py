@@ -214,6 +214,45 @@ class ClientHub:
 
         return target.client_id, target.name
 
+    async def notify(self, payload: dict[str, object], client_id: str | None = None) -> bool:
+        """Sends a one-way message (no ack) to a PC client, falling back to the newest one.
+
+        Returns False when no client is connected or sending fails.
+        """
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a JSON object")
+        target = await self._client_or_newest(client_id)
+        if target is None:
+            return False
+        try:
+            await target.websocket.send_text(json.dumps(payload))
+        except Exception as exc:  # noqa: BLE001 - a dead socket just means 'not delivered'
+            LOGGER.warning("Could not notify PC client %s: %s", target.name, exc)
+            return False
+        return True
+
+    async def broadcast(self, payload: dict[str, object]) -> int:
+        """Sends a one-way message to every PC client; returns how many received it."""
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a JSON object")
+        async with self._lock:
+            targets = list(self._clients.values())
+        text = json.dumps(payload)
+        delivered = 0
+        for client in targets:
+            try:
+                await client.websocket.send_text(text)
+                delivered += 1
+            except Exception as exc:  # noqa: BLE001 - one dead socket must not stop the others
+                LOGGER.warning("Could not broadcast to PC client %s: %s", client.name, exc)
+        return delivered
+
+    async def _client_or_newest(self, client_id: str | None) -> ConnectedClient | None:
+        async with self._lock:
+            if client_id and client_id in self._clients:
+                return self._clients[client_id]
+            return list(self._clients.values())[-1] if self._clients else None
+
     async def _select_client(self, client_id: str | None) -> ConnectedClient:
         async with self._lock:
             if not self._clients:
