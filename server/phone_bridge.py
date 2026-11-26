@@ -26,6 +26,9 @@ CMD_CLIPBOARD_WRITE = "clipboard.write"
 CMD_PHONE_CONTROL = "phone.control"
 CMD_PHONE_COMMUNICATION = "phone.communication"
 CMD_PHONE_SEND_FILE = "phone.send_file"
+CMD_NOTIFICATIONS_LIST = "notifications.list"
+CMD_NOTIFICATIONS_REPLY = "notifications.reply"
+CMD_NOTIFICATIONS_DISMISS = "notifications.dismiss"
 
 SNAPSHOT_TIMEOUT_S = 10.0
 UI_ACTION_TIMEOUT_S = 35.0
@@ -109,6 +112,26 @@ class PhoneBridge:
         if client_id:
             payload["client_id"] = client_id
         return await self._call(CMD_PHONE_SEND_FILE, payload, UI_ACTION_TIMEOUT_S)
+
+    async def list_notifications(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Lists recent allowed notifications on the phone."""
+        return await self._call(CMD_NOTIFICATIONS_LIST, dict(arguments), SNAPSHOT_TIMEOUT_S)
+
+    async def reply_notification(self, notification_id: str, text: str) -> dict[str, Any]:
+        """Sends a direct RemoteInput reply to a phone notification."""
+        return await self._call(
+            CMD_NOTIFICATIONS_REPLY,
+            {"notification_id": str(notification_id).strip(), "text": str(text)},
+            INTENT_TIMEOUT_S,
+        )
+
+    async def dismiss_notification(self, notification_id: str) -> dict[str, Any]:
+        """Dismisses a phone notification by its short id (n1..nN)."""
+        return await self._call(
+            CMD_NOTIFICATIONS_DISMISS,
+            {"notification_id": str(notification_id).strip()},
+            SNAPSHOT_TIMEOUT_S,
+        )
 
     async def _call(self, command: str, arguments: dict[str, Any], timeout_s: float) -> dict[str, Any]:
         if self._hub is None:

@@ -91,6 +91,10 @@ class ClipboardTransferRequest(BaseModel):
     client_id: str | None = Field(default=None)
 
 
+class NotificationReplyRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=4000)
+
+
 class AgentRunRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=16000)
     client_id: str | None = Field(default=None)
@@ -192,6 +196,14 @@ def create_app(
         enable_thinking=True,
         phone_hub=phone_hub,
     )
+
+    async def _forward_phone_notification_event(event: str, data: dict[str, object]) -> None:
+        if event in ("notification_posted", "notification_removed"):
+            await client_hub.broadcast(
+                {"type": "phone_notification", "event": event, "notification": data}
+            )
+
+    phone_hub.add_event_listener(_forward_phone_notification_event)
     shutting_down_for_update = False
     active_update_id = ""
 
@@ -539,6 +551,23 @@ def create_app(
         if res.get("ok") is False:
             raise HTTPException(status_code=503, detail=str(res.get("error") or "Phone link is offline"))
         return {"ok": True, "target": "phone", **res}
+
+    @app.post("/api/phone/notifications/{notification_id}/reply")
+    async def reply_phone_notification(
+        notification_id: str,
+        request: NotificationReplyRequest,
+    ) -> dict[str, object]:
+        res = await agent_engine.phone_bridge.reply_notification(notification_id, request.text)
+        if res.get("ok") is False:
+            raise HTTPException(status_code=400, detail=str(res.get("error") or "Could not reply"))
+        return res
+
+    @app.post("/api/phone/notifications/{notification_id}/dismiss")
+    async def dismiss_phone_notification_endpoint(notification_id: str) -> dict[str, object]:
+        res = await agent_engine.phone_bridge.dismiss_notification(notification_id)
+        if res.get("ok") is False:
+            raise HTTPException(status_code=400, detail=str(res.get("error") or "Could not dismiss"))
+        return res
 
     @app.websocket("/ws/phone")
     async def phone_websocket(

@@ -67,6 +67,9 @@ class MainActivity : AppCompatActivity() {
         updateTypeOnPhoneRow()
         updateDndAccessRow()
         updatePhonePermissionsRow()
+        updateNotificationAccessRow()
+        updateAllowedNotificationAppsRow()
+        updateMirrorNotificationsRow()
     }
 
     // ------------------------------------------------------------ Layout
@@ -103,6 +106,9 @@ class MainActivity : AppCompatActivity() {
         binding.phoneLinkStatusRow.setOnClickListener { PhoneLink.reconnectNow(this) }
         binding.dndAccessRow.setOnClickListener { openDndAccessSettings() }
         binding.phonePermissionsRow.setOnClickListener { requestPhoneControlPermissions() }
+        binding.notificationAccessRow.setOnClickListener { openNotificationListenerSettings() }
+        binding.allowedNotificationAppsRow.setOnClickListener { showAllowedNotificationAppsDialog() }
+        binding.mirrorNotificationsRow.setOnClickListener { toggleMirrorNotifications() }
     }
 
     private fun refreshServerRows() {
@@ -611,6 +617,86 @@ class MainActivity : AppCompatActivity() {
             perms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
         ActivityCompat.requestPermissions(this, perms.toTypedArray(), PHONE_PERMS_REQUEST_CODE)
+    }
+
+    private fun isNotificationListenerEnabled(): Boolean {
+        val enabled = Settings.Secure.getString(
+            contentResolver,
+            "enabled_notification_listeners"
+        ) ?: return false
+        val expected = ComponentName(this, LocalWhisperNotificationListener::class.java)
+        return enabled.split(':').any { ComponentName.unflattenFromString(it) == expected }
+    }
+
+    private fun updateNotificationAccessRow() {
+        val enabled = isNotificationListenerEnabled()
+        val text = getString(
+            if (enabled) R.string.notification_access_active else R.string.notification_access_inactive
+        )
+        val color = if (enabled) R.color.lw_success else R.color.lw_accent
+        setColoredText(binding.notificationAccessSubtitle, text, color)
+    }
+
+    private fun openNotificationListenerSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        } catch (exc: Exception) {
+            Log.w(TAG, "Notification listener settings unavailable", exc)
+        }
+    }
+
+    private fun updateAllowedNotificationAppsRow() {
+        val count = prefs.allowedNotificationPackages.size
+        binding.allowedNotificationAppsSubtitle.text =
+            getString(R.string.allowed_notification_apps_count_format, count)
+    }
+
+    private fun showAllowedNotificationAppsDialog() {
+        val pm = packageManager
+        val launcherIntent = Intent(Intent.ACTION_MAIN, null).addCategory(Intent.CATEGORY_LAUNCHER)
+        val resolved = pm.queryIntentActivities(launcherIntent, 0)
+        val candidates = LinkedHashMap<String, String>()
+        for (pkg in NotificationStore.DEFAULT_ALLOWED_PACKAGES) {
+            val label = try {
+                pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+            } catch (_: Exception) {
+                pkg.substringAfterLast('.')
+            }
+            candidates[pkg] = "$label ($pkg)"
+        }
+        for (info in resolved) {
+            val pkg = info.activityInfo?.packageName ?: continue
+            if (pkg == packageName || candidates.containsKey(pkg)) continue
+            val label = info.loadLabel(pm)?.toString().orEmpty().ifEmpty { pkg }
+            candidates[pkg] = "$label ($pkg)"
+        }
+
+        val pkgList = candidates.keys.toList()
+        val labels = pkgList.map { candidates[it].orEmpty() }.toTypedArray()
+        val selected = prefs.allowedNotificationPackages.toMutableSet()
+        val checked = BooleanArray(pkgList.size) { idx -> selected.contains(pkgList[idx]) }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.row_allowed_notification_apps)
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                val pkg = pkgList[which]
+                if (isChecked) selected.add(pkg) else selected.remove(pkg)
+            }
+            .setNegativeButton(R.string.dialog_cancel, null)
+            .setPositiveButton(R.string.dialog_save) { _, _ ->
+                prefs.allowedNotificationPackages = selected
+                updateAllowedNotificationAppsRow()
+            }
+            .show()
+    }
+
+    private fun toggleMirrorNotifications() {
+        prefs.mirrorNotificationsToPc = !prefs.mirrorNotificationsToPc
+        updateMirrorNotificationsRow()
+    }
+
+    private fun updateMirrorNotificationsRow() {
+        binding.mirrorNotificationsSwitch.isChecked = prefs.mirrorNotificationsToPc
     }
 
     private fun openAccessibilitySettings() {

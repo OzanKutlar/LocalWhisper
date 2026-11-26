@@ -52,6 +52,17 @@ class PhoneToolsWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("control_phone", names)
         self.assertIn("phone_communication", names)
         self.assertIn("send_phone_file_to_pc", names)
+        self.assertIn("list_phone_notifications", names)
+        self.assertIn("reply_to_phone_notification", names)
+        self.assertIn("dismiss_phone_notification", names)
+        self.assertFalse(check_confirmation_required("list_phone_notifications", {})[0])
+        self.assertFalse(check_confirmation_required("dismiss_phone_notification", {"notification_id": "n1"})[0])
+        self.assertTrue(
+            check_confirmation_required(
+                "reply_to_phone_notification",
+                {"notification_id": "n1", "text": "Be right there"},
+            )[0]
+        )
 
         self.assertFalse(check_confirmation_required("control_phone", {"action": "set_flashlight", "enabled": True})[0])
         self.assertFalse(check_confirmation_required("phone_communication", {"action": "draft_sms", "recipient": "Mom"})[0])
@@ -89,6 +100,27 @@ class PhoneToolsWiringTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(resumed.status, "completed")
         self.assertEqual(hub.calls[0][0], "phone.send_file")
+
+    async def test_notifications_list_taints_turn_and_reply_is_gated(self) -> None:
+        hub = FakePhoneHub()
+        scripted = [
+            tool_msg("list_phone_notifications", '{"app_query": "WhatsApp"}', "c1"),
+            tool_msg("reply_to_phone_notification", '{"notification_id": "n1", "text": "On it"}', "c2"),
+            {"role": "assistant", "content": "Replied."},
+        ]
+        engine = ScriptedEngine(hub, scripted)
+        first = await engine.run_turn("Check WhatsApp notifications and reply On it")
+        self.assertEqual(first.status, "confirmation_required")
+        self.assertEqual([c for c, _a in hub.calls], ["notifications.list"])
+        self.assertTrue(engine._sessions[first.session_id].screen_tainted)
+
+        resumed = await engine.confirm_tool(
+            session_id=first.session_id,
+            confirmation_id=first.pending_confirmation["confirmation_id"],
+            approved=True,
+        )
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual([c for c, _a in hub.calls], ["notifications.list", "notifications.reply"])
 
 
 if __name__ == "__main__":

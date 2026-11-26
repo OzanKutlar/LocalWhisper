@@ -22,6 +22,7 @@ from overlay.step_aside import StepAsideCoordinator
 from overlay.theme import OverlayPalette, current_palette
 from overlay.widgets.pill import CornerPillWindow
 from overlay.widgets.sheet import JarvisSheetWindow
+from overlay.widgets.toast import PhoneNotificationToastManager
 from pc_layout import enumerate_monitors
 from pc_tools import set_excluded_hwnds
 
@@ -32,6 +33,7 @@ class _OverlayBus(QObject):
     summon_requested = Signal()
     hide_for_pc_work = Signal()
     restore_after_pc_work = Signal()
+    phone_notification = Signal(str, dict)
 
 
 def _make_tray_icon(palette: OverlayPalette) -> QIcon:
@@ -101,9 +103,18 @@ class OverlayController:
             on_dismiss=self.sheet.dismiss_overlay,
         )
 
+        self.toasts = PhoneNotificationToastManager(
+            palette=self.palette,
+            work_area_provider=_work_area_at,
+            reply_fn=self.api.reply_phone_notification,
+            dismiss_fn=self.api.dismiss_phone_notification,
+            on_hwnds_changed=self._sync_excluded_hwnds,
+        )
+
         self._bus.summon_requested.connect(self.sheet.summon_at_cursor)
         self._bus.hide_for_pc_work.connect(self.sheet.hide_temporarily_for_pc_work)
         self._bus.restore_after_pc_work.connect(self.sheet.restore_after_pc_work)
+        self._bus.phone_notification.connect(self.toasts.on_notification_event)
 
         self._sync_excluded_hwnds()
         self._hotkey: GlobalHotkeyListener | None = None
@@ -117,8 +128,11 @@ class OverlayController:
     def own_client_info(self) -> tuple[str, str]:
         return self._own_client_id, self._client_name
 
+    def on_phone_notification_message(self, event: str, notification: dict[str, object]) -> None:
+        self._bus.phone_notification.emit(event, notification)
+
     def excluded_hwnds(self) -> set[int]:
-        return {self.sheet.hwnd(), self.pill.hwnd()}
+        return {self.sheet.hwnd(), self.pill.hwnd(), *self.toasts.active_hwnds()}
 
     def _sync_excluded_hwnds(self) -> None:
         set_excluded_hwnds(self.excluded_hwnds())
@@ -183,6 +197,7 @@ class OverlayController:
 
     def shutdown(self) -> None:
         self.step_aside.cancel_restore_timer()
+        self.toasts.close_all()
         if self._hotkey is not None:
             self._hotkey.stop()
         if self._tray is not None:

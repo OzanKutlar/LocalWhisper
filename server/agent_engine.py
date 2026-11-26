@@ -59,10 +59,22 @@ REMOTE_STOP_EVENT = "remote_stop"
 # Tools that only look at a screen; several in a row without an action means the agent is stuck.
 PASSIVE_SCREEN_TOOLS = PC_VISUAL_SCREEN_TOOLS | PHONE_VISUAL_SCREEN_TOOLS
 # Passive tools never reset the repeated-read counter because they do not change the screen.
-PASSIVE_TOOLS = PASSIVE_SCREEN_TOOLS | frozenset({"list_pc_windows", "get_pc_status", "get_pc_layout", "read_clipboard"})
-PHONE_LINK_TOOLS = frozenset({"control_phone", "phone_communication", "send_phone_file_to_pc"})
+PASSIVE_TOOLS = PASSIVE_SCREEN_TOOLS | frozenset(
+    {"list_pc_windows", "get_pc_status", "get_pc_layout", "read_clipboard", "list_phone_notifications"}
+)
+PHONE_LINK_TOOLS = frozenset(
+    {
+        "control_phone",
+        "phone_communication",
+        "send_phone_file_to_pc",
+        "list_phone_notifications",
+        "reply_to_phone_notification",
+        "dismiss_phone_notification",
+    }
+)
+# Tools whose results contain untrusted on-screen, clipboard, notification or in-image text.
+SCREEN_READING_TOOLS = SNAPSHOT_TOOLS | IMAGE_TOOLS | frozenset({"read_clipboard", "list_phone_notifications"})
 MAX_CONSECUTIVE_SCREEN_READS = 2
-# Reading arbitrary image files from disk still requires explicit user approval.
 GATED_IMAGE_TOOLS = frozenset({"read_pc_image"})
 PC_IMAGE_TOOLS = PC_VISUAL_SCREEN_TOOLS | GATED_IMAGE_TOOLS
 IMAGE_TOOLS = PC_IMAGE_TOOLS | PHONE_VISUAL_SCREEN_TOOLS
@@ -1072,6 +1084,10 @@ def check_confirmation_required(
         which = str(arguments.get("which", "latest_screenshot") or "latest_screenshot").strip()
         detail = str(arguments.get("path", "") or "").strip() if which == "path" else which.replace("_", " ")
         return True, f"Send '{_shorten(detail or 'file', 60)}' from your phone to your PC?"
+    if tool_name == "reply_to_phone_notification":
+        nid = str(arguments.get("notification_id", "") or "").strip()
+        text = _shorten(str(arguments.get("text", "") or ""), 80)
+        return True, f'Reply to phone notification {nid or "(unknown)"} with "{text}"?' 
     if tool_name == "manage_pc_app":
         action = str(arguments.get("action", "")).strip()
         target = str(arguments.get("target", "")).strip()
@@ -1227,6 +1243,15 @@ def summarize_tool_call(tool_name: str, arguments: dict[str, Any]) -> str:
     if tool_name == "send_phone_file_to_pc":
         which = str(arguments.get("which", "file") or "file").replace("_", " ")
         return f"Send Phone File ({which})"
+    if tool_name == "list_phone_notifications":
+        app_q = str(arguments.get("app_query", "") or "").strip()
+        return f"Phone Notifications ('{_shorten(app_q, 24)}')" if app_q else "Phone Notifications"
+    if tool_name == "reply_to_phone_notification":
+        nid = str(arguments.get("notification_id", "") or "").strip()
+        return f"Reply Notification {nid}".strip()
+    if tool_name == "dismiss_phone_notification":
+        nid = str(arguments.get("notification_id", "") or "").strip()
+        return f"Dismiss Notification {nid}".strip()
     return tool_name
 
 
@@ -2818,8 +2843,17 @@ class AgentEngine:
             result = await self.phone_bridge.control_phone(arguments)
         elif tool_name == "phone_communication":
             result = await self.phone_bridge.phone_communication(arguments)
-        else:
+        elif tool_name == "send_phone_file_to_pc":
             result = await self.phone_bridge.send_file_to_pc(arguments, client_id=client_id)
+        elif tool_name == "list_phone_notifications":
+            result = await self.phone_bridge.list_notifications(arguments)
+        elif tool_name == "reply_to_phone_notification":
+            result = await self.phone_bridge.reply_notification(
+                str(arguments.get("notification_id", "")),
+                str(arguments.get("text", "")),
+            )
+        else:
+            result = await self.phone_bridge.dismiss_notification(str(arguments.get("notification_id", "")))
         ok = result.get("ok") is not False
         label = summary if ok else f"{summary} ({result.get('reason', 'not done')})"
         session.tool_records.append(ToolCallRecord(tool=tool_name, status="ok" if ok else "error", summary=label))

@@ -136,6 +136,7 @@ async def handle_message(
     server_http_base: str = "",
     on_welcome: Callable[[str, str], None] | None = None,
     step_aside_runner: Callable[[Callable[[], Any]], Any] | None = None,
+    on_phone_notification: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> None:
     try:
         message = json.loads(raw_message)
@@ -161,6 +162,13 @@ async def handle_message(
         pushed = str(message.get("text", "") or "")
         if pushed:
             await asyncio.to_thread(_apply_clipboard_push, pushed)
+        return
+
+    if msg_type == "phone_notification":
+        ev = str(message.get("event", "") or "")
+        notif = message.get("notification")
+        if ev and isinstance(notif, dict) and on_phone_notification is not None:
+            on_phone_notification(ev, notif)
         return
 
     if msg_type == "tool_call":
@@ -239,6 +247,7 @@ async def run_client(
     human_typing: bool,
     on_welcome: Callable[[str, str], None] | None = None,
     step_aside_runner: Callable[[Callable[[], Any]], Any] | None = None,
+    on_phone_notification: Callable[[str, dict[str, Any]], None] | None = None,
     stop_event: threading.Event | None = None,
 ) -> None:
     ws_url = build_ws_url(server_url, client_name)
@@ -272,6 +281,7 @@ async def run_client(
                             server_http_base,
                             on_welcome=on_welcome,
                             step_aside_runner=step_aside_runner,
+                            on_phone_notification=on_phone_notification,
                         )
         except asyncio.CancelledError:
             raise
@@ -388,6 +398,7 @@ def main() -> int:
                             human_typing,
                             on_welcome=controller.set_own_client_id,
                             step_aside_runner=controller.step_aside.run_with_step_aside,
+                            on_phone_notification=controller.on_phone_notification_message,
                             stop_event=stop_evt,
                         )
                     )

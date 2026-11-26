@@ -28,6 +28,9 @@ object PhoneRpcDispatcher {
                 "phone.control" -> PhoneControls.executeControl(context, arguments)
                 "phone.communication" -> PhoneControls.executeCommunication(context, arguments)
                 "phone.send_file" -> FileHandoff.sendPhoneFileToPc(context, arguments)
+                "notifications.list" -> handleNotificationsList(arguments)
+                "notifications.reply" -> handleNotificationReply(arguments)
+                "notifications.dismiss" -> handleNotificationDismiss(arguments)
                 else -> errorResult("unsupported_command", "Unsupported phone command: $command")
             }
         } catch (exc: Exception) {
@@ -120,6 +123,31 @@ object PhoneRpcDispatcher {
                 if (!ok) put("error", "Could not copy text to the phone clipboard")
             }
         }
+
+    private fun handleNotificationsList(arguments: JSONObject): JSONObject {
+        if (!LocalWhisperNotificationListener.isRunning()) {
+            return errorResult(
+                "notification_access_disabled",
+                "Notification access is disabled on the phone. Enable 'Notification access' in LocalWhisper settings."
+            )
+        }
+        return NotificationStore.listJson(
+            appQuery = arguments.optString("app_query", ""),
+            search = arguments.optString("search", ""),
+            sinceMinutes = arguments.optInt("since_minutes", 0)
+        )
+    }
+
+    private fun handleNotificationReply(arguments: JSONObject): JSONObject {
+        val id = arguments.optString("notification_id", "")
+        val text = arguments.optString("text", "")
+        return LocalWhisperNotificationListener.replyToNotification(id, text)
+    }
+
+    private fun handleNotificationDismiss(arguments: JSONObject): JSONObject {
+        val id = arguments.optString("notification_id", "")
+        return LocalWhisperNotificationListener.dismissNotification(id)
+    }
 
     private fun errorResult(reason: String, message: String): JSONObject = JSONObject().apply {
         put("ok", false)

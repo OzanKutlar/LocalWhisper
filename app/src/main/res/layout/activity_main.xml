@@ -358,6 +358,70 @@
                         style="@style/Widget.LocalWhisper.RowSummary"
                         android:text="@string/phone_permissions_hint" />
                 </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
+                    android:id="@+id/notificationAccessRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_notification_access" />
+
+                    <TextView
+                        android:id="@+id/notificationAccessSubtitle"
+                        style="@style/Widget.LocalWhisper.RowValue"
+                        android:text="@string/notification_access_inactive" />
+                </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
+                    android:id="@+id/allowedNotificationAppsRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_allowed_notification_apps" />
+
+                    <TextView
+                        android:id="@+id/allowedNotificationAppsSubtitle"
+                        style="@style/Widget.LocalWhisper.RowSummary"
+                        android:text="@string/allowed_notification_apps_hint" />
+                </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
+                    android:id="@+id/mirrorNotificationsRow"
+                    style="@style/Widget.LocalWhisper.Row"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/Widget.LocalWhisper.RowTitle"
+                            android:text="@string/row_mirror_notifications" />
+
+                        <TextView
+                            style="@style/Widget.LocalWhisper.RowSummary"
+                            android:text="@string/row_mirror_notifications_hint" />
+                    </LinearLayout>
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/mirrorNotificationsSwitch"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="16dp"
+                        android:clickable="false"
+                        android:focusable="false"
+                        android:importantForAccessibility="no" />
+                </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 

@@ -128,6 +128,21 @@ class OverlayServerApi:
                 raise RuntimeError(_extract_error(resp))
             return str(resp.json().get("text", "") or "")
 
+    def reply_phone_notification(self, notification_id: str, text: str) -> None:
+        with httpx.Client(timeout=CONNECT_TIMEOUT_S) as client:
+            resp = client.post(
+                f"{self.base_url}/api/phone/notifications/{notification_id}/reply",
+                json={"text": text},
+            )
+            if resp.status_code >= 400:
+                raise RuntimeError(_extract_error(resp))
+
+    def dismiss_phone_notification(self, notification_id: str) -> None:
+        with httpx.Client(timeout=CONNECT_TIMEOUT_S) as client:
+            resp = client.post(f"{self.base_url}/api/phone/notifications/{notification_id}/dismiss")
+            if resp.status_code >= 400:
+                raise RuntimeError(_extract_error(resp))
+
     def send_keystrokes(self, text: str, client_id: str | None) -> str:
         payload: dict[str, Any] = {"text": text}
         if client_id:

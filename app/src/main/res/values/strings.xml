@@ -211,6 +211,17 @@
     <string name="assistant_camera_failed">Could not open camera.</string>
     <string name="assistant_attachment_decode_failed">Could not load the selected image.</string>
 
+    <!-- Notifications & PC mirroring -->
+    <string name="notification_listener_label">LocalWhisper notifications</string>
+    <string name="row_notification_access">Notification access</string>
+    <string name="notification_access_active">Enabled · Jarvis can read &amp; reply to allowed apps</string>
+    <string name="notification_access_inactive">Tap to enable LocalWhisper notifications</string>
+    <string name="row_allowed_notification_apps">Allowed notification apps</string>
+    <string name="allowed_notification_apps_hint">Choose which apps Jarvis can read &amp; mirror</string>
+    <string name="allowed_notification_apps_count_format">%1$d app(s) allowed</string>
+    <string name="row_mirror_notifications">Mirror notifications to PC</string>
+    <string name="row_mirror_notifications_hint">Show allowed phone notifications as corner cards on your PC</string>
+
     <!-- Local (phone) typing -->
     <string name="local_typing_service_label">LocalWhisper typing</string>
     <string name="local_typing_service_description">Types the text you send to This phone from the LocalWhisper assistant into the text field you were using. It does nothing else.</string>

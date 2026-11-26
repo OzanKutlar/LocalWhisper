@@ -53,6 +53,19 @@ class ServerPreferences(context: Context) {
                 .apply()
         }
 
+    var mirrorNotificationsToPc: Boolean
+        get() = prefs.getBoolean(KEY_MIRROR_NOTIFICATIONS, true)
+        set(value) = prefs.edit().putBoolean(KEY_MIRROR_NOTIFICATIONS, value).apply()
+
+    var allowedNotificationPackages: Set<String>
+        get() {
+            val stored = prefs.getStringSet(KEY_ALLOWED_NOTIF_PACKAGES, null)
+            return stored?.toSet() ?: NotificationStore.DEFAULT_ALLOWED_PACKAGES
+        }
+        set(value) {
+            prefs.edit().putStringSet(KEY_ALLOWED_NOTIF_PACKAGES, value.toSet()).apply()
+        }
+
     /** Saves a server found by network discovery as the user's chosen server. */
     fun applyDiscoveredServer(server: DiscoveredServer) {
         serverHost = server.host
@@ -81,6 +94,8 @@ class ServerPreferences(context: Context) {
         private const val KEY_AGENT_RESUME_TIMEOUT_S = "agent_resume_timeout_s"
         private const val KEY_SERVER_NAME = "server_name"
         private const val KEY_USER_SET_SERVER = "user_set_server"
+        private const val KEY_MIRROR_NOTIFICATIONS = "mirror_notifications_to_pc"
+        private const val KEY_ALLOWED_NOTIF_PACKAGES = "allowed_notification_packages"
         const val DEFAULT_HOST = "192.168.1.100"
         const val DEFAULT_PORT = 8765
         const val DEFAULT_AGENT_RESUME_TIMEOUT_S = 5
