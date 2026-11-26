@@ -100,7 +100,7 @@ class TimelineCardWidget(QFrame):
                 pill.setWordWrap(True)
                 pill.setStyleSheet(
                     f"QLabel {{ background-color: {self._palette.pill_bg}; color: {color}; "
-                    "border-radius: 10px; padding: 4px 10px; font-size: 12px; }}"
+                    "border-radius: 10px; padding: 4px 10px; font-size: 12px; }"
                 )
                 self._body_layout.addWidget(pill)
 
@@ -155,5 +155,5 @@ class TurnWidget(QWidget):
         self.reply_label.setText(text)
         self.reply_label.setStyleSheet(
             f"QLabel {{ background-color: {self._palette.card_elevated}; color: {color}; "
-            "border-radius: 12px; padding: 11px 14px; font-size: 14px; }}"
+            "border-radius: 12px; padding: 11px 14px; font-size: 14px; }"
         )

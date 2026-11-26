@@ -94,7 +94,7 @@ class ConfirmCardWidget(QFrame):
         self._approve_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._approve_btn.setStyleSheet(
             f"QPushButton {{ background-color: {palette.accent}; color: {palette.accent_on}; "
-            "border: none; border-radius: 16px; padding: 6px 18px; font-weight: bold; }}"
+            "border: none; border-radius: 16px; padding: 6px 18px; font-weight: bold; }"
         )
         self._approve_btn.clicked.connect(self._on_approve)
 

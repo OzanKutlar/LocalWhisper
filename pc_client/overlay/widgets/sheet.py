@@ -9,7 +9,7 @@ import time
 from typing import Any, Callable
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QPoint, QTimer, Qt, Signal
-from PySide6.QtGui import QCursor, QDragEnterEvent, QDropEvent, QImage, QKeyEvent
+from PySide6.QtGui import QCursor, QDragEnterEvent, QDropEvent, QImage, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -85,7 +85,7 @@ class _PromptTextEdit(QTextEdit):
             event.accept()
             self._on_submit()
             return
-        if event.matches(Qt.KeySequence.StandardKey.Paste):
+        if event.matches(QKeySequence.StandardKey.Paste):
             clip = QApplication.clipboard()
             img = clip.image()
             if not img.isNull() and self._on_paste_image(img):
@@ -218,21 +218,21 @@ class JarvisSheetWindow(QWidget):
         self._session_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._session_btn.setStyleSheet(
             f"QPushButton {{ background-color: {p.pill_bg}; color: {p.text_primary}; "
-            "border: none; border-radius: 13px; padding: 5px 12px; font-size: 12px; text-align: left; }}"
+            "border: none; border-radius: 13px; padding: 5px 12px; font-size: 12px; text-align: left; }"
         )
         self._session_btn.clicked.connect(self._show_session_picker)
         self._new_session_btn = QPushButton("+ New", self._session_bar)
         self._new_session_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._new_session_btn.setStyleSheet(
             f"QPushButton {{ background-color: {p.pill_bg}; color: {p.accent}; "
-            "border: none; border-radius: 13px; padding: 5px 11px; font-size: 12px; font-weight: bold; }}"
+            "border: none; border-radius: 13px; padding: 5px 11px; font-size: 12px; font-weight: bold; }"
         )
         self._new_session_btn.clicked.connect(self._start_fresh_session)
         self._attach_btn = QPushButton("+ Image", self._session_bar)
         self._attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._attach_btn.setStyleSheet(
             f"QPushButton {{ background-color: {p.pill_bg}; color: {p.accent}; "
-            "border: none; border-radius: 13px; padding: 5px 11px; font-size: 12px; font-weight: bold; }}"
+            "border: none; border-radius: 13px; padding: 5px 11px; font-size: 12px; font-weight: bold; }"
         )
         self._attach_btn.clicked.connect(self._pick_image_attachment)
         sb_layout.addWidget(self._session_btn, 1)
@@ -266,7 +266,7 @@ class JarvisSheetWindow(QWidget):
         self._input.setFixedHeight(92)
         self._input.setStyleSheet(
             f"QTextEdit {{ background-color: {p.card_elevated}; color: {p.text_primary}; "
-            "border: none; border-radius: 14px; padding: 10px 12px; font-size: 14px; }}"
+            "border: none; border-radius: 14px; padding: 10px 12px; font-size: 14px; }"
         )
         card_layout.addWidget(self._input)
 
@@ -303,7 +303,7 @@ class JarvisSheetWindow(QWidget):
         self._interject_input.setPlaceholderText("Interject or correct the agent…")
         self._interject_input.setStyleSheet(
             f"QLineEdit {{ background-color: {p.card_elevated}; color: {p.text_primary}; "
-            "border: none; border-radius: 12px; padding: 8px 12px; font-size: 13px; }}"
+            "border: none; border-radius: 12px; padding: 8px 12px; font-size: 13px; }"
         )
         self._interject_input.textEdited.connect(self._on_interject_text_edited)
         self._interject_input.returnPressed.connect(self._submit_interjection)
@@ -312,7 +312,7 @@ class JarvisSheetWindow(QWidget):
         ij_send.setFixedSize(36, 36)
         ij_send.setStyleSheet(
             f"QPushButton {{ background-color: {p.pill_bg}; color: {p.accent}; "
-            "border: none; border-radius: 18px; font-size: 15px; font-weight: bold; }}"
+            "border: none; border-radius: 18px; font-size: 15px; font-weight: bold; }"
         )
         ij_send.clicked.connect(self._submit_interjection)
         ij_layout.addWidget(self._interject_input, 1)
@@ -339,7 +339,7 @@ class JarvisSheetWindow(QWidget):
             chip.setStyleSheet(
                 f"QPushButton {{ background-color: {p.pill_bg}; color: {p.text_primary}; "
                 "border: none; border-radius: 11px; padding: 4px 8px; "
-                "font-family: Consolas, monospace; font-size: 12px; }}"
+                "font-family: Consolas, monospace; font-size: 12px; }"
             )
             chip.clicked.connect(lambda _checked=False, t=token: self._insert_token(t))
             chips_layout.addWidget(chip)
@@ -388,7 +388,7 @@ class JarvisSheetWindow(QWidget):
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {self._palette.text_secondary}; "
-            "border: none; border-radius: 18px; font-size: 18px; }}"
+            "border: none; border-radius: 18px; font-size: 18px; }"
         )
         btn.clicked.connect(callback)
         return btn
@@ -625,7 +625,7 @@ class JarvisSheetWindow(QWidget):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(
                 f"QPushButton {{ background-color: {self._palette.pill_bg}; color: {self._palette.accent}; "
-                "border: none; border-radius: 11px; padding: 3px 10px; font-size: 12px; }}"
+                "border: none; border-radius: 11px; padding: 3px 10px; font-size: 12px; }"
             )
             btn.clicked.connect(lambda _c=False, i=idx: self._remove_attachment(i))
             self._attachments_layout.addWidget(btn)
