@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import logging
 import os
 import subprocess
+import sys
 import time
 from typing import Any
 
@@ -52,6 +54,13 @@ POWER_ACTIONS = frozenset({"sleep", "hibernate", "shutdown", "restart", "cancel_
 
 def _is_windows() -> bool:
     return os.name == "nt" and hasattr(ctypes, "windll")
+
+
+def _missing_package_hint(feature: str, package: str, exc: ImportError) -> str:
+    return (
+        f"{feature} requires '{package}' ({exc}). "
+        f'Install into the active Python with: "{sys.executable}" -m pip install -r pc_client/requirements.txt'
+    )
 
 
 def clamp_percentage(raw: Any, field_name: str = "value") -> int:
@@ -144,7 +153,7 @@ def run_control_pc_audio(arguments: dict[str, Any]) -> dict[str, Any]:
     try:
         import comtypes  # noqa: PLC0415
     except ImportError as exc:
-        raise RuntimeError("Audio control requires 'pycaw' and 'comtypes'. Run: pip install -r pc_client/requirements.txt") from exc
+        raise RuntimeError(_missing_package_hint("Audio control", "pycaw/comtypes", exc)) from exc
 
     comtypes.CoInitialize()
     try:
@@ -183,7 +192,7 @@ def _get_pycaw_enumerator() -> tuple[Any, Any]:
     try:
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume  # noqa: PLC0415
     except ImportError as exc:
-        raise RuntimeError("Audio control requires 'pycaw'. Run: pip install -r pc_client/requirements.txt") from exc
+        raise RuntimeError(_missing_package_hint("Audio control", "pycaw", exc)) from exc
     return AudioUtilities, IAudioEndpointVolume
 
 
@@ -328,9 +337,8 @@ def run_control_pc_display(arguments: dict[str, Any]) -> dict[str, Any]:
     try:
         import screen_brightness_control as sbc  # noqa: PLC0415
     except ImportError as exc:
-        raise RuntimeError(
-            "Brightness control requires 'screen-brightness-control'. Run: pip install -r pc_client/requirements.txt"
-        ) from exc
+        LOGGER.warning("screen_brightness_control unavailable (%s); trying WMI brightness fallback", exc)
+        return _wmi_brightness_fallback(action, arguments, exc)
 
     monitor_names = list(sbc.list_monitors())
     if action == "get_brightness":
@@ -354,6 +362,57 @@ def run_control_pc_display(arguments: dict[str, Any]) -> dict[str, Any]:
         "brightness_pct": level,
         "monitor": "all" if display_arg is None else target_spec,
     }
+
+
+def _wmi_brightness_fallback(action: str, arguments: dict[str, Any], import_exc: ImportError) -> dict[str, Any]:
+    """Uses Windows WMI directly for internal laptop displays when screen_brightness_control cannot import."""
+    if action == "get_brightness":
+        script = (
+            "$m = @(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness "
+            "-ErrorAction Stop | Select-Object InstanceName,CurrentBrightness); "
+            "$m | ConvertTo-Json -Compress"
+        )
+        res = _run_powershell(script)
+        if res is None:
+            raise RuntimeError(_missing_package_hint("Brightness control", "screen-brightness-control", import_exc))
+        try:
+            parsed = json.loads(res) if res else []
+        except json.JSONDecodeError:
+            parsed = []
+        items = [parsed] if isinstance(parsed, dict) else (parsed if isinstance(parsed, list) else [])
+        if not items:
+            raise RuntimeError(_missing_package_hint("Brightness control", "screen-brightness-control", import_exc))
+        monitors = [
+            {"monitor": idx, "name": str(it.get("InstanceName", f"Display {idx}")), "brightness_pct": it.get("CurrentBrightness")}
+            for idx, it in enumerate(items, start=1)
+            if isinstance(it, dict)
+        ]
+        return {"ok": True, "monitors": monitors, "backend": "wmi"}
+
+    level = clamp_percentage(arguments.get("brightness_pct"), "brightness_pct")
+    script = (
+        "$m = @(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop); "
+        f"if ($m.Count -eq 0) {{ exit 2 }}; foreach ($d in $m) {{ $d.WmiSetBrightness(1, {level}) | Out-Null }}"
+    )
+    if _run_powershell(script) is None:
+        raise RuntimeError(_missing_package_hint("Brightness control", "screen-brightness-control", import_exc))
+    return {"ok": True, "action": "set_brightness", "brightness_pct": level, "monitor": "internal", "backend": "wmi"}
+
+
+def _run_powershell(command: str) -> str | None:
+    try:
+        res = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=SHUTDOWN_TIMEOUT_S,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    return res.stdout.strip()
 
 
 def _resolve_brightness_target(monitor_names: list[str], spec: Any) -> int | str | None:
@@ -428,7 +487,7 @@ def run_get_pc_status(_arguments: dict[str, Any]) -> dict[str, Any]:
     try:
         import psutil  # noqa: PLC0415
     except ImportError as exc:
-        raise RuntimeError("PC status requires 'psutil'. Run: pip install -r pc_client/requirements.txt") from exc
+        raise RuntimeError(_missing_package_hint("PC status", "psutil", exc)) from exc
 
     cpu_pct = round(float(psutil.cpu_percent(interval=0.25)), 1)
     mem = psutil.virtual_memory()

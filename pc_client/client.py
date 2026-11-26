@@ -222,6 +222,7 @@ async def run_client(
 ) -> None:
     ws_url = build_ws_url(server_url, client_name)
     server_http_base = http_base_from_ws(server_url)
+    LOGGER.info("Using Python: %s", sys.executable)
     LOGGER.info("Using AutoHotkey: %s", ahk_exe)
     LOGGER.info("Target server: %s", ws_url)
 
