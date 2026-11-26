@@ -218,7 +218,8 @@ object AgentRuntimeManager {
         clientId: String?,
         sessionId: String?,
         isPhoneTarget: Boolean,
-        interjection: Boolean = false
+        interjection: Boolean = false,
+        attachments: List<PromptImageAttachment> = emptyList()
     ) {
         init(context)
         val ctx = context.applicationContext
@@ -285,6 +286,7 @@ object AgentRuntimeManager {
                     priorTurns = existingTurns,
                     phoneScreen = phoneScreenSnapshot,
                     interjection = interjection,
+                    attachments = attachments,
                     onProgress = { progress -> applyStreamProgress(progress) }
                 )
                 result.onSuccess { response ->

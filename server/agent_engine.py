@@ -60,6 +60,7 @@ REMOTE_STOP_EVENT = "remote_stop"
 PASSIVE_SCREEN_TOOLS = PC_VISUAL_SCREEN_TOOLS | PHONE_VISUAL_SCREEN_TOOLS
 # Passive tools never reset the repeated-read counter because they do not change the screen.
 PASSIVE_TOOLS = PASSIVE_SCREEN_TOOLS | frozenset({"list_pc_windows", "get_pc_status", "get_pc_layout", "read_clipboard"})
+PHONE_LINK_TOOLS = frozenset({"control_phone", "phone_communication", "send_phone_file_to_pc"})
 MAX_CONSECUTIVE_SCREEN_READS = 2
 # Reading arbitrary image files from disk still requires explicit user approval.
 GATED_IMAGE_TOOLS = frozenset({"read_pc_image"})
@@ -1067,6 +1068,10 @@ def check_confirmation_required(
     if tool_name == "send_pc_file_to_phone":
         raw_path = str(arguments.get("path", "") or "").strip()
         return True, f"Send file '{_shorten(raw_path or 'file', 70)}' from your PC to your phone?"
+    if tool_name == "send_phone_file_to_pc":
+        which = str(arguments.get("which", "latest_screenshot") or "latest_screenshot").strip()
+        detail = str(arguments.get("path", "") or "").strip() if which == "path" else which.replace("_", " ")
+        return True, f"Send '{_shorten(detail or 'file', 60)}' from your phone to your PC?"
     if tool_name == "manage_pc_app":
         action = str(arguments.get("action", "")).strip()
         target = str(arguments.get("target", "")).strip()
@@ -1212,6 +1217,16 @@ def summarize_tool_call(tool_name: str, arguments: dict[str, Any]) -> str:
         raw_path = str(arguments.get("path", "") or "").strip()
         name = os.path.basename(raw_path.replace("\\", "/")) if raw_path else ""
         return f"Send PC File ('{_shorten(name or raw_path, 32)}')" if raw_path else "Send PC File"
+    if tool_name == "control_phone":
+        action = str(arguments.get("action", "") or "control")
+        return f"Phone: {action}"
+    if tool_name == "phone_communication":
+        action = str(arguments.get("action", "") or "comm")
+        recipient = _shorten(str(arguments.get("recipient", "") or ""), 24)
+        return f"Phone {action}: {recipient}" if recipient else f"Phone {action}"
+    if tool_name == "send_phone_file_to_pc":
+        which = str(arguments.get("which", "file") or "file").replace("_", " ")
+        return f"Send Phone File ({which})"
     return tool_name
 
 
@@ -2744,6 +2759,9 @@ class AgentEngine:
         if tool_name in ("read_clipboard", "write_clipboard"):
             return await self._execute_clipboard_tool(session, tool_name, arguments, client_id, summary)
 
+        if tool_name in PHONE_LINK_TOOLS:
+            return await self._execute_phone_link_tool(session, tool_name, arguments, client_id, summary)
+
         if tool_name == "trigger_android_intent":
             action_payload = build_android_intent_payload(arguments)
             if self._phone_runs_remotely(session):
@@ -2785,6 +2803,27 @@ class AgentEngine:
                 ToolCallRecord(tool=tool_name, status="error", summary=f"{summary} (failed)")
             )
             return {"ok": False, "error": str(exc)}
+
+    async def _execute_phone_link_tool(
+        self,
+        session: AgentSession,
+        tool_name: str,
+        arguments: dict[str, Any],
+        client_id: str | None,
+        summary: str,
+    ) -> dict[str, Any]:
+        if self._remote_stopped(session):
+            result = self._stopped_on_phone_result()
+        elif tool_name == "control_phone":
+            result = await self.phone_bridge.control_phone(arguments)
+        elif tool_name == "phone_communication":
+            result = await self.phone_bridge.phone_communication(arguments)
+        else:
+            result = await self.phone_bridge.send_file_to_pc(arguments, client_id=client_id)
+        ok = result.get("ok") is not False
+        label = summary if ok else f"{summary} ({result.get('reason', 'not done')})"
+        session.tool_records.append(ToolCallRecord(tool=tool_name, status="ok" if ok else "error", summary=label))
+        return {"ok": ok, "dispatched_to": "phone_link", "result": result}
 
     async def _execute_clipboard_tool(
         self,

@@ -23,6 +23,9 @@ CMD_TARGET_PREVIEW = "phone.target_preview"
 CMD_ANDROID_INTENT = "android.intent"
 CMD_CLIPBOARD_READ = "clipboard.read"
 CMD_CLIPBOARD_WRITE = "clipboard.write"
+CMD_PHONE_CONTROL = "phone.control"
+CMD_PHONE_COMMUNICATION = "phone.communication"
+CMD_PHONE_SEND_FILE = "phone.send_file"
 
 SNAPSHOT_TIMEOUT_S = 10.0
 UI_ACTION_TIMEOUT_S = 35.0
@@ -91,6 +94,21 @@ class PhoneBridge:
     async def write_clipboard(self, text: str) -> dict[str, Any]:
         """Writes text to the phone clipboard over the phone link."""
         return await self._call(CMD_CLIPBOARD_WRITE, {"text": str(text)}, SNAPSHOT_TIMEOUT_S)
+
+    async def control_phone(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Runs a native phone hardware/setting command or status check over the phone link."""
+        return await self._call(CMD_PHONE_CONTROL, dict(arguments), INTENT_TIMEOUT_S)
+
+    async def phone_communication(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Opens a pre-filled SMS draft or dialer on the phone over the phone link."""
+        return await self._call(CMD_PHONE_COMMUNICATION, dict(arguments), INTENT_TIMEOUT_S)
+
+    async def send_file_to_pc(self, arguments: dict[str, Any], client_id: str | None = None) -> dict[str, Any]:
+        """Asks the phone to upload a file (latest screenshot/photo or path) to the PC."""
+        payload = dict(arguments)
+        if client_id:
+            payload["client_id"] = client_id
+        return await self._call(CMD_PHONE_SEND_FILE, payload, UI_ACTION_TIMEOUT_S)
 
     async def _call(self, command: str, arguments: dict[str, Any], timeout_s: float) -> dict[str, Any]:
         if self._hub is None:

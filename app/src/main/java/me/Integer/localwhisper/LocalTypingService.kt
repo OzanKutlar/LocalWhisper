@@ -56,11 +56,14 @@ class LocalTypingService : AccessibilityService() {
     private var serviceScope: CoroutineScope? = null
     private var overlayObserverJob: Job? = null
     private var overlayController: AgentOverlayController? = null
+    private var remoteIndicator: RemoteControlIndicator? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         AgentRuntimeManager.init(applicationContext)
+        PhoneLink.ensureStarted(applicationContext)
+        remoteIndicator = RemoteControlIndicator(this)
         attachAgentOverlay()
     }
 
@@ -114,6 +117,8 @@ class LocalTypingService : AccessibilityService() {
         }
         overlayObserverJob?.cancel()
         overlayObserverJob = null
+        remoteIndicator?.hide()
+        remoteIndicator = null
         overlayController?.destroy()
         overlayController = null
         serviceScope?.cancel()
@@ -792,13 +797,23 @@ class LocalTypingService : AccessibilityService() {
         alwaysHide: Boolean = false,
         block: suspend () -> T
     ): T {
-        val controller = overlayController ?: return block()
-        return controller.withOverlayHidden(
-            tapX = tapX,
-            tapY = tapY,
-            alwaysHide = alwaysHide,
-            block = block
-        )
+        val indicator = remoteIndicator
+        if (alwaysHide) indicator?.setTemporaryHidden(true)
+        return try {
+            val controller = overlayController
+            if (controller == null) {
+                block()
+            } else {
+                controller.withOverlayHidden(
+                    tapX = tapX,
+                    tapY = tapY,
+                    alwaysHide = alwaysHide,
+                    block = block
+                )
+            }
+        } finally {
+            if (alwaysHide) indicator?.setTemporaryHidden(false)
+        }
     }
 
     /** How a phone action was carried out; [method] is reported to the agent and logged. */
@@ -1139,6 +1154,11 @@ class LocalTypingService : AccessibilityService() {
 
         /** True when LocalTypingService is connected and able to host the floating overlay. */
         fun isRunning(): Boolean = instance != null
+
+        /** Shows/refreshes the 'Controlled from PC · Stop' pill while the PC operates the phone screen. */
+        fun noteRemoteControlActivity() {
+            instance?.remoteIndicator?.noteActivity()
+        }
 
         /**
          * Brings the assistant overlay back after the agent acted on the phone. Started from the

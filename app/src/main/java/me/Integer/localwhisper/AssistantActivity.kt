@@ -8,7 +8,11 @@ import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -112,6 +116,23 @@ class AssistantActivity : AppCompatActivity() {
     private var isAgentPaused = false
     private var lastConfirmationId: String? = null
     private var interjectHadText = false
+    private val pendingAttachments = mutableListOf<PromptImageAttachment>()
+    private var pendingCameraUri: Uri? = null
+
+    private val takePictureLauncher =
+        registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+            val uri = pendingCameraUri
+            if (success && uri != null) {
+                addAttachmentFromUri(uri, getString(R.string.assistant_attachment_camera_label))
+            }
+        }
+
+    private val pickImageLauncher =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri != null) {
+                addAttachmentFromUri(uri, getString(R.string.assistant_attachment_gallery_label))
+            }
+        }
 
     /** State of the bar shown when the saved server did not answer the launch ping. */
     private enum class ServerBarState { HIDDEN, UNREACHABLE, SEARCHING, SWITCHED, FOUND_MANY, NONE_FOUND }
@@ -138,6 +159,7 @@ class AssistantActivity : AppCompatActivity() {
         sessionStore = AgentSessionStore(this)
         retainedRecording = RetainedRecording(this)
         AgentRuntimeManager.init(applicationContext)
+        PhoneLink.ensureStarted(applicationContext)
         AgentRuntimeManager.setActivityVisible(true)
         agentSessionId = sessionStore.resolveInitialSessionId(prefs.agentResumeTimeoutSeconds)
         if (prefs.selectedClientId == LOCAL_TARGET_ID) {
@@ -234,6 +256,14 @@ class AssistantActivity : AppCompatActivity() {
             performTapHaptic(it)
             startFreshAgentSession()
         }
+        binding.cameraAttachButton.setOnClickListener {
+            performTapHaptic(it)
+            launchCameraCapture()
+        }
+        binding.galleryAttachButton.setOnClickListener {
+            performTapHaptic(it)
+            launchGalleryPicker()
+        }
         binding.approveConfirmButton.setOnClickListener {
             performTapHaptic(it)
             binding.rejectionReasonInput.setText("")
@@ -324,6 +354,85 @@ class AssistantActivity : AppCompatActivity() {
             .setDuration(260L)
             .setInterpolator(DecelerateInterpolator(2.0f))
             .start()
+    }
+
+    private fun launchCameraCapture() {
+        if (pendingAttachments.size >= ImageAttachments.MAX_ATTACHMENTS) {
+            showError(getString(R.string.assistant_attachment_limit))
+            return
+        }
+        try {
+            val dir = File(cacheDir, "camera_captures").apply { mkdirs() }
+            val photoFile = File(dir, "capture_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", photoFile)
+            pendingCameraUri = uri
+            takePictureLauncher.launch(uri)
+        } catch (exc: Exception) {
+            Log.w(TAG, "Could not launch camera", exc)
+            showError(getString(R.string.assistant_camera_failed))
+        }
+    }
+
+    private fun launchGalleryPicker() {
+        if (pendingAttachments.size >= ImageAttachments.MAX_ATTACHMENTS) {
+            showError(getString(R.string.assistant_attachment_limit))
+            return
+        }
+        try {
+            pickImageLauncher.launch("image/*")
+        } catch (exc: Exception) {
+            Log.w(TAG, "Could not launch image picker", exc)
+        }
+    }
+
+    private fun addAttachmentFromUri(uri: Uri, label: String) {
+        lifecycleScope.launch {
+            val encoded = ImageAttachments.encodeUri(this@AssistantActivity, uri, label)
+            if (encoded == null) {
+                showError(getString(R.string.assistant_attachment_decode_failed))
+                return@launch
+            }
+            if (pendingAttachments.size < ImageAttachments.MAX_ATTACHMENTS) {
+                pendingAttachments.add(encoded)
+                if (!isAgentMode) {
+                    isAgentMode = true
+                }
+                if (currentState == UiState.RECORDING) {
+                    enterKeyboardMode()
+                } else {
+                    renderAttachmentsBar()
+                }
+            }
+        }
+    }
+
+    private fun renderAttachmentsBar() {
+        val group = binding.attachmentChipGroup
+        group.removeAllViews()
+        val show = isAgentMode && pendingAttachments.isNotEmpty()
+        binding.attachmentsScroll.visibility = visibleIf(show)
+        if (!show) return
+        val chipBg = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.lw_pill_bg))
+        val chipText = ContextCompat.getColor(this, R.color.lw_accent)
+        for ((index, att) in pendingAttachments.withIndex()) {
+            val chip = Chip(this).apply {
+                text = "${att.label} (${att.width}×${att.height}) ✕"
+                textSize = 12f
+                isCheckable = false
+                chipBackgroundColor = chipBg
+                chipStrokeWidth = 0f
+                setTextColor(chipText)
+                setEnsureMinTouchTargetSize(false)
+                setOnClickListener {
+                    performTapHaptic(it)
+                    if (index in pendingAttachments.indices) {
+                        pendingAttachments.removeAt(index)
+                        renderAttachmentsBar()
+                    }
+                }
+            }
+            group.addView(chip)
+        }
     }
 
     private fun insertTokenAtCursor(token: String) {
@@ -759,13 +868,17 @@ class AssistantActivity : AppCompatActivity() {
         hideKeyboard()
         val isPhoneTarget = isLocalTargetSelected()
         val targetClientId = if (isPhoneTarget) null else selectedClient?.id
+        val attachmentsSnapshot = pendingAttachments.toList()
+        pendingAttachments.clear()
+        renderAttachmentsBar()
         // The overlay stays open; the runtime hides it only while it acts on the phone.
         AgentRuntimeManager.startTurn(
             context = this,
             prompt = prompt,
             clientId = targetClientId,
             sessionId = agentSessionId,
-            isPhoneTarget = isPhoneTarget
+            isPhoneTarget = isPhoneTarget,
+            attachments = attachmentsSnapshot
         )
     }
 
@@ -1427,6 +1540,7 @@ class AssistantActivity : AppCompatActivity() {
 
     private fun switchToServer(server: DiscoveredServer) {
         prefs.applyDiscoveredServer(server)
+        PhoneLink.reconnectNow(this)
         renderServerBar(
             ServerBarState.SWITCHED,
             getString(R.string.assistant_server_switched_format, server.name, server.host)
@@ -1553,6 +1667,7 @@ class AssistantActivity : AppCompatActivity() {
         renderModeToggle(state)
         renderAgentModeButton(state)
         renderSessionBar(state)
+        renderAttachmentsBar()
         updateTranscriptHint()
         if (state == UiState.AGENT_RESULT) {
             adjustAgentScrollHeightAndScrollToBottom()

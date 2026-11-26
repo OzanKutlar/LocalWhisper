@@ -85,6 +85,12 @@ class SendKeystrokesRequest(BaseModel):
     client_id: str | None = Field(default=None)
 
 
+class ClipboardTransferRequest(BaseModel):
+    text: str = Field(default="", max_length=200000)
+    target: str = Field(..., min_length=2, max_length=16)
+    client_id: str | None = Field(default=None)
+
+
 class AgentRunRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=16000)
     client_id: str | None = Field(default=None)
@@ -509,6 +515,30 @@ def create_app(
         if stored is None:
             raise HTTPException(status_code=404, detail="File not found or expired")
         return FileResponse(stored.data_path, media_type=stored.mime_type, filename=stored.name)
+
+    @app.post("/api/clipboard/transfer")
+    async def transfer_clipboard(request: ClipboardTransferRequest) -> dict[str, object]:
+        clean_target = request.target.strip().lower()
+        if clean_target not in FILE_TARGETS:
+            raise HTTPException(status_code=400, detail="target must be 'pc' or 'phone'")
+        if clean_target == "pc":
+            if not request.text:
+                raise HTTPException(status_code=400, detail="text must not be empty when target is 'pc'")
+            delivered = await client_hub.notify(
+                {"type": "clipboard_push", "text": request.text},
+                client_id=request.client_id,
+            )
+            if not delivered:
+                raise HTTPException(status_code=503, detail="No PC client is connected")
+            return {"ok": True, "target": "pc", "delivered": True}
+
+        if request.text:
+            res = await agent_engine.phone_bridge.write_clipboard(request.text)
+        else:
+            res = await agent_engine.phone_bridge.read_clipboard()
+        if res.get("ok") is False:
+            raise HTTPException(status_code=503, detail=str(res.get("error") or "Phone link is offline"))
+        return {"ok": True, "target": "phone", **res}
 
     @app.websocket("/ws/phone")
     async def phone_websocket(

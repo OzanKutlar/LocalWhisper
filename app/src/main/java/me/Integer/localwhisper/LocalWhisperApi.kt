@@ -275,6 +275,28 @@ class LocalWhisperApi {
         }
     }
 
+    suspend fun transferClipboard(
+        baseUrl: String,
+        text: String,
+        target: String,
+        clientId: String? = null
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("text", text)
+            put("target", target)
+            if (!clientId.isNullOrBlank()) {
+                put("client_id", clientId)
+            }
+        }
+        val request = Request.Builder()
+            .url("$baseUrl/api/clipboard/transfer")
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        executeJsonRequest(request) { json ->
+            json.optString("text", "")
+        }
+    }
+
     suspend fun runAgent(
         baseUrl: String,
         prompt: String,
@@ -282,7 +304,8 @@ class LocalWhisperApi {
         sessionId: String?,
         priorTurns: List<AgentChatTurn> = emptyList(),
         phoneScreen: JSONObject? = null,
-        interjection: Boolean = false
+        interjection: Boolean = false,
+        attachments: List<PromptImageAttachment> = emptyList()
     ): Result<AgentResponse> = withContext(Dispatchers.IO) {
         if (prompt.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("Prompt must not be empty"))
@@ -322,6 +345,9 @@ class LocalWhisperApi {
             }
             if (phoneScreen != null) {
                 put("phone_screen", phoneScreen)
+            }
+            if (attachments.isNotEmpty()) {
+                put("attachments", ImageAttachments.toJsonArray(attachments))
             }
         }
         val request = Request.Builder()
@@ -374,6 +400,7 @@ class LocalWhisperApi {
         priorTurns: List<AgentChatTurn> = emptyList(),
         phoneScreen: JSONObject? = null,
         interjection: Boolean = false,
+        attachments: List<PromptImageAttachment> = emptyList(),
         onProgress: suspend (AgentStreamProgress) -> Unit
     ): Result<AgentResponse> = withContext(Dispatchers.IO) {
         if (prompt.isBlank()) {
@@ -414,6 +441,9 @@ class LocalWhisperApi {
             }
             if (phoneScreen != null) {
                 put("phone_screen", phoneScreen)
+            }
+            if (attachments.isNotEmpty()) {
+                put("attachments", ImageAttachments.toJsonArray(attachments))
             }
         }
         val request = Request.Builder()

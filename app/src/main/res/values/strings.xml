@@ -183,6 +183,34 @@
     <string name="assistant_discard_recording">Discard</string>
     <string name="assistant_retry_missing">The saved recording is no longer available.</string>
 
+    <!-- Phone link, permissions, handoff & camera attachments -->
+    <string name="section_phone_link">Phone link &amp; permissions</string>
+    <string name="row_phone_link_status">Phone link to server</string>
+    <string name="phone_link_connected">Connected · PC &amp; scenes can reach this phone</string>
+    <string name="phone_link_connecting">Connecting to server…</string>
+    <string name="phone_link_disconnected">Disconnected · tap to reconnect</string>
+    <string name="row_dnd_access">Do Not Disturb access</string>
+    <string name="dnd_access_granted">Allowed (Jarvis can toggle DND &amp; silent mode)</string>
+    <string name="dnd_access_missing">Tap to allow DND &amp; silent ringer control</string>
+    <string name="row_phone_permissions">Contacts, photos &amp; notifications</string>
+    <string name="phone_permissions_granted">Contacts &amp; media permissions granted</string>
+    <string name="phone_permissions_hint">Tap to allow contact lookup, screenshot handoff &amp; alerts</string>
+    <string name="remote_control_pill_label">Controlled from PC</string>
+    <string name="remote_control_stopped_toast">Stopped PC control</string>
+    <string name="share_to_pc_label">Send to PC</string>
+    <string name="share_to_pc_files_sent_format">Sent %1$d file(s) to PC</string>
+    <string name="share_to_pc_text_sent">Sent to PC</string>
+    <string name="share_to_pc_failed">Could not send to PC</string>
+    <string name="file_received_toast_format">Saved to Downloads/LocalWhisper: %1$s</string>
+    <string name="file_received_notif_title">File received from PC</string>
+    <string name="assistant_attach_camera_desc">Take a photo for the Agent</string>
+    <string name="assistant_attach_gallery_desc">Attach an image for the Agent</string>
+    <string name="assistant_attachment_camera_label">Camera</string>
+    <string name="assistant_attachment_gallery_label">Image</string>
+    <string name="assistant_attachment_limit">At most 2 images can be attached per prompt.</string>
+    <string name="assistant_camera_failed">Could not open camera.</string>
+    <string name="assistant_attachment_decode_failed">Could not load the selected image.</string>
+
     <!-- Local (phone) typing -->
     <string name="local_typing_service_label">LocalWhisper typing</string>
     <string name="local_typing_service_description">Types the text you send to This phone from the LocalWhisper assistant into the text field you were using. It does nothing else.</string>

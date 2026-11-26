@@ -301,5 +301,65 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- Phone link & permissions section -->
+        <TextView
+            style="@style/Widget.LocalWhisper.SectionHeader"
+            android:text="@string/section_phone_link" />
+
+        <com.google.android.material.card.MaterialCardView style="@style/Widget.LocalWhisper.GroupCard">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:id="@+id/phoneLinkStatusRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_phone_link_status" />
+
+                    <TextView
+                        android:id="@+id/phoneLinkStatusSubtitle"
+                        style="@style/Widget.LocalWhisper.RowValue"
+                        android:text="@string/phone_link_disconnected" />
+                </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
+                    android:id="@+id/dndAccessRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_dnd_access" />
+
+                    <TextView
+                        android:id="@+id/dndAccessSubtitle"
+                        style="@style/Widget.LocalWhisper.RowSummary"
+                        android:text="@string/dnd_access_missing" />
+                </LinearLayout>
+
+                <View style="@style/Widget.LocalWhisper.Divider" />
+
+                <LinearLayout
+                    android:id="@+id/phonePermissionsRow"
+                    style="@style/Widget.LocalWhisper.Row">
+
+                    <TextView
+                        style="@style/Widget.LocalWhisper.RowTitle"
+                        android:text="@string/row_phone_permissions" />
+
+                    <TextView
+                        android:id="@+id/phonePermissionsSubtitle"
+                        style="@style/Widget.LocalWhisper.RowSummary"
+                        android:text="@string/phone_permissions_hint" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
     </LinearLayout>
 </ScrollView>

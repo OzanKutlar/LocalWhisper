@@ -1,12 +1,16 @@
 package me.Integer.localwhisper
 
 import android.Manifest
+import android.app.NotificationManager
 import android.app.role.RoleManager
 import android.content.ComponentName
 import android.content.DialogInterface
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import android.provider.Settings
 import android.util.Log
 import android.widget.TextView
@@ -48,6 +52,8 @@ class MainActivity : AppCompatActivity() {
         setupRows()
         refreshServerRows()
         resetConnectionStatus()
+        PhoneLink.ensureStarted(applicationContext)
+        observePhoneLinkState()
         maybeAutoDiscover()
     }
 
@@ -59,6 +65,8 @@ class MainActivity : AppCompatActivity() {
         updateAgentModeRow()
         updateAgentResumeTimeoutRow()
         updateTypeOnPhoneRow()
+        updateDndAccessRow()
+        updatePhonePermissionsRow()
     }
 
     // ------------------------------------------------------------ Layout
@@ -92,6 +100,9 @@ class MainActivity : AppCompatActivity() {
         binding.agentModeRow.setOnClickListener { toggleStartInAgentMode() }
         binding.agentResumeTimeoutRow.setOnClickListener { showAgentResumeTimeoutDialog() }
         binding.typeOnPhoneRow.setOnClickListener { openAccessibilitySettings() }
+        binding.phoneLinkStatusRow.setOnClickListener { PhoneLink.reconnectNow(this) }
+        binding.dndAccessRow.setOnClickListener { openDndAccessSettings() }
+        binding.phonePermissionsRow.setOnClickListener { requestPhoneControlPermissions() }
     }
 
     private fun refreshServerRows() {
@@ -148,6 +159,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyDiscoveredServer(server: DiscoveredServer) {
         prefs.applyDiscoveredServer(server)
+        PhoneLink.reconnectNow(this)
         refreshServerRows()
         showDiscoveryStatus(
             getString(R.string.discovery_applied_format, server.name, server.host, server.port),
@@ -211,6 +223,7 @@ class MainActivity : AppCompatActivity() {
         prefs.serverHost = host
         prefs.serverPort = port
         prefs.hasUserSetServer = true
+        PhoneLink.reconnectNow(this)
         refreshServerRows()
         resetConnectionStatus()
         return true
@@ -534,6 +547,72 @@ class MainActivity : AppCompatActivity() {
         return enabled.split(':').any { ComponentName.unflattenFromString(it) == expected }
     }
 
+    private fun observePhoneLinkState() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                PhoneLink.state.collect { state ->
+                    when (state) {
+                        PhoneLinkState.CONNECTED -> setColoredText(
+                            binding.phoneLinkStatusSubtitle,
+                            getString(R.string.phone_link_connected),
+                            R.color.lw_success
+                        )
+                        PhoneLinkState.CONNECTING -> setColoredText(
+                            binding.phoneLinkStatusSubtitle,
+                            getString(R.string.phone_link_connecting),
+                            R.color.lw_accent
+                        )
+                        PhoneLinkState.DISCONNECTED -> setColoredText(
+                            binding.phoneLinkStatusSubtitle,
+                            getString(R.string.phone_link_disconnected),
+                            R.color.lw_text_secondary
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun updateDndAccessRow() {
+        val nm = getSystemService(NotificationManager::class.java)
+        val granted = nm?.isNotificationPolicyAccessGranted == true
+        val text = getString(if (granted) R.string.dnd_access_granted else R.string.dnd_access_missing)
+        val color = if (granted) R.color.lw_success else R.color.lw_text_secondary
+        setColoredText(binding.dndAccessSubtitle, text, color)
+    }
+
+    private fun openDndAccessSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+        } catch (exc: Exception) {
+            Log.w(TAG, "DND settings unavailable", exc)
+        }
+    }
+
+    private fun updatePhonePermissionsRow() {
+        val contacts = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) ==
+            PackageManager.PERMISSION_GRANTED
+        val photos = FileHandoff.hasMediaImagesPermission(this)
+        val text = if (contacts && photos) {
+            getString(R.string.phone_permissions_granted)
+        } else {
+            getString(R.string.phone_permissions_hint)
+        }
+        val color = if (contacts && photos) R.color.lw_success else R.color.lw_text_secondary
+        setColoredText(binding.phonePermissionsSubtitle, text, color)
+    }
+
+    private fun requestPhoneControlPermissions() {
+        val perms = mutableListOf(Manifest.permission.READ_CONTACTS)
+        if (Build.VERSION.SDK_INT >= 33) {
+            perms.add(Manifest.permission.READ_MEDIA_IMAGES)
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            perms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        ActivityCompat.requestPermissions(this, perms.toTypedArray(), PHONE_PERMS_REQUEST_CODE)
+    }
+
     private fun openAccessibilitySettings() {
         try {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -581,6 +660,10 @@ class MainActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == PHONE_PERMS_REQUEST_CODE) {
+            updatePhonePermissionsRow()
+            return
+        }
         if (requestCode != RECORD_AUDIO_REQUEST_CODE) {
             return
         }
@@ -599,6 +682,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "LW-Main"
         private const val RECORD_AUDIO_REQUEST_CODE = 1001
+        private const val PHONE_PERMS_REQUEST_CODE = 1002
         private const val UPDATE_POLL_INTERVAL_MS = 750L
         private const val UPDATE_MAX_POLL_ATTEMPTS = 120 // ~90s budget for git pull + CUDA model reload
     }
