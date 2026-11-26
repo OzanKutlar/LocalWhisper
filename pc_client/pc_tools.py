@@ -16,6 +16,16 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
+from handoff_client import upload_handoff_file
+from layout_math import find_window_monitor
+from pc_clipboard import read_clipboard_text, write_clipboard_text
+from pc_layout import enumerate_monitors, run_arrange_pc_windows, run_get_pc_layout
+from pc_system import (
+    run_control_pc_audio,
+    run_control_pc_display,
+    run_control_pc_power,
+    run_get_pc_status,
+)
 from screen_elements import (
     MAX_ELEMENTS,
     FrameMemo,
@@ -85,6 +95,19 @@ MOUSE_BUTTONS = {"left": "Left", "right": "Right"}
 SNAPSHOTS = SnapshotCache()
 # Screen region shown by the newest screenshot the model saw; box_2d targets are measured on it.
 FRAMES = FrameMemo()
+# Overlay windows owned by this process are excluded from window lists and foreground checks.
+EXCLUDED_HWNDS: set[int] = set()
+
+
+def set_excluded_hwnds(hwnds: set[int] | list[int]) -> None:
+    EXCLUDED_HWNDS.clear()
+    for h in hwnds:
+        try:
+            val = int(h)
+            if val > 0:
+                EXCLUDED_HWNDS.add(val)
+        except (TypeError, ValueError):
+            continue
 
 IGNORED_WINDOW_CLASSES = frozenset(
     {
@@ -168,6 +191,7 @@ def dispatch_pc_tool(
     send_mode: str,
     human_typing: bool,
     ahk_sender: Callable[[Path, str, str, bool], None],
+    server_http_base: str = "",
 ) -> dict[str, Any]:
     """Executes a named PC tool and returns a JSON-serializable result dictionary."""
     if tool_name == "execute_pc_ahk_sequence":
@@ -196,6 +220,24 @@ def dispatch_pc_tool(
         return run_scroll_pc(arguments, ahk_exe)
     if tool_name == "move_pc_mouse":
         return run_move_pc_mouse(arguments, ahk_exe)
+    if tool_name == "control_pc_audio":
+        return run_control_pc_audio(arguments)
+    if tool_name == "control_pc_display":
+        return run_control_pc_display(arguments)
+    if tool_name == "control_pc_power":
+        return run_control_pc_power(arguments)
+    if tool_name == "get_pc_status":
+        return run_get_pc_status(arguments)
+    if tool_name == "arrange_pc_windows":
+        return run_arrange_pc_windows(arguments, _enumerate_win32_windows, filter_windows_list)
+    if tool_name == "get_pc_layout":
+        return run_get_pc_layout(_enumerate_win32_windows)
+    if tool_name == "read_pc_clipboard":
+        return read_clipboard_text()
+    if tool_name == "write_pc_clipboard":
+        return write_clipboard_text(str(arguments.get("text", "")))
+    if tool_name == "send_pc_file_to_phone":
+        return upload_handoff_file(server_http_base, str(arguments.get("path", "") or ""), target="phone")
     raise ValueError(f"Unsupported PC tool: {tool_name}")
 
 
@@ -382,12 +424,16 @@ def run_list_pc_windows(arguments: dict[str, Any]) -> dict[str, Any]:
     """Enumerates active/open Windows on the PC like a `ps` tool and returns structured JSON."""
     query = str(arguments.get("query", "")).strip()
     include_minimized = bool(arguments.get("include_minimized", True))
+    monitors = enumerate_monitors()
     all_windows, fg_hwnd_hex = _enumerate_win32_windows()
+    for win in all_windows:
+        win["monitor"] = find_window_monitor(win.get("bounds"), monitors)
     matched = filter_windows_list(all_windows, query=query, include_minimized=include_minimized)
     foreground_win = next((w for w in all_windows if w.get("is_foreground")), None)
     return {
         "ok": True,
         "query": query,
+        "monitors": [m.to_dict() for m in monitors],
         "foreground_hwnd": fg_hwnd_hex,
         "foreground_window": _strip_internal_fields(foreground_win) if foreground_win else None,
         "total_count": len(matched),
@@ -1119,7 +1165,8 @@ def _is_windows() -> bool:
 def _foreground_hwnd() -> int:
     if not _is_windows():
         return 0
-    return int(ctypes.windll.user32.GetForegroundWindow() or 0)
+    hwnd = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+    return 0 if hwnd in EXCLUDED_HWNDS else hwnd
 
 
 def _foreground_window_info() -> dict[str, Any] | None:
@@ -1190,6 +1237,8 @@ def _enumerate_win32_windows() -> tuple[list[dict[str, Any]], str | None]:
     wnd_enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
 
     def _callback(hwnd: int, _lparam: int) -> bool:
+        if int(hwnd) in EXCLUDED_HWNDS:
+            return True
         if not user32.IsWindowVisible(hwnd):
             return True
         length = int(user32.GetWindowTextLengthW(hwnd) or 0)

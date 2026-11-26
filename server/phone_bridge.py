@@ -21,6 +21,8 @@ CMD_SNAPSHOT = "phone.snapshot"
 CMD_UI_ACTION = "phone.ui_action"
 CMD_TARGET_PREVIEW = "phone.target_preview"
 CMD_ANDROID_INTENT = "android.intent"
+CMD_CLIPBOARD_READ = "clipboard.read"
+CMD_CLIPBOARD_WRITE = "clipboard.write"
 
 SNAPSHOT_TIMEOUT_S = 10.0
 UI_ACTION_TIMEOUT_S = 35.0
@@ -81,6 +83,14 @@ class PhoneBridge:
     async def android_intent(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Alarm, timer, URL, web search or app launch on the phone."""
         return await self._call(CMD_ANDROID_INTENT, {"action": dict(payload)}, INTENT_TIMEOUT_S)
+
+    async def read_clipboard(self) -> dict[str, Any]:
+        """Reads text from the phone clipboard over the phone link."""
+        return await self._call(CMD_CLIPBOARD_READ, {}, SNAPSHOT_TIMEOUT_S)
+
+    async def write_clipboard(self, text: str) -> dict[str, Any]:
+        """Writes text to the phone clipboard over the phone link."""
+        return await self._call(CMD_CLIPBOARD_WRITE, {"text": str(text)}, SNAPSHOT_TIMEOUT_S)
 
     async def _call(self, command: str, arguments: dict[str, Any], timeout_s: float) -> dict[str, Any]:
         if self._hub is None:

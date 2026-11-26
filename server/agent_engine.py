@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from agent_tools import EXTRA_AGENT_TOOLS, EXTRA_SYSTEM_PROMPT
 from client_hub import ClientDispatchError, ClientHub, NoClientConnectedError
 from phone_bridge import ORIGIN_PHONE, PhoneBridge, normalize_origin
 from phone_elements import (
@@ -58,7 +59,7 @@ REMOTE_STOP_EVENT = "remote_stop"
 # Tools that only look at a screen; several in a row without an action means the agent is stuck.
 PASSIVE_SCREEN_TOOLS = PC_VISUAL_SCREEN_TOOLS | PHONE_VISUAL_SCREEN_TOOLS
 # Passive tools never reset the repeated-read counter because they do not change the screen.
-PASSIVE_TOOLS = PASSIVE_SCREEN_TOOLS | frozenset({"list_pc_windows"})
+PASSIVE_TOOLS = PASSIVE_SCREEN_TOOLS | frozenset({"list_pc_windows", "get_pc_status", "get_pc_layout", "read_clipboard"})
 MAX_CONSECUTIVE_SCREEN_READS = 2
 # Reading arbitrary image files from disk still requires explicit user approval.
 GATED_IMAGE_TOOLS = frozenset({"read_pc_image"})
@@ -81,8 +82,9 @@ SNAPSHOT_TOOLS = frozenset(
         "tap_phone_point",
     }
 )
-# Tools whose results contain untrusted on-screen or in-image text (emails, chats, web pages, photos).
-SCREEN_READING_TOOLS = SNAPSHOT_TOOLS | IMAGE_TOOLS
+# Tools whose results contain untrusted on-screen, clipboard or in-image text.
+SCREEN_READING_TOOLS = SNAPSHOT_TOOLS | IMAGE_TOOLS | frozenset({"read_clipboard"})
+GATED_POWER_ACTIONS = frozenset({"sleep", "hibernate", "shutdown", "restart"})
 SNAPSHOT_FIELDS_TO_PRUNE = frozenset(
     {"elements", "after", "candidates", "ui_controls", "visible_windows", "ui_elements", "visible_texts"}
 )
@@ -194,6 +196,7 @@ SYSTEM_PROMPT = (
     "12. The user may talk to you from the phone or from a popup on the PC. Phone tools work either "
     "way: from the PC they run on the phone over its link. If a phone tool reports `phone_offline`, "
     "`phone_locked` or `stopped_on_phone`, stop using phone tools and tell the user what to do."
+    + EXTRA_SYSTEM_PROMPT
 )
 
 _PHONE_TARGET_PROPERTIES: dict[str, Any] = {
@@ -827,6 +830,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    *EXTRA_AGENT_TOOLS,
 ]
 
 
@@ -1052,6 +1056,17 @@ def check_confirmation_required(
         return True, describe_click(tool_name, arguments, {})
     if tool_name in GATED_IMAGE_TOOLS:
         return True, describe_image_request(tool_name, arguments)
+    if tool_name == "control_pc_power":
+        action = str(arguments.get("action", "") or "").strip().lower()
+        if action in GATED_POWER_ACTIONS:
+            delay = _int_or(arguments.get("delay_seconds"), 30)
+            if action in ("shutdown", "restart"):
+                return True, f"{action.capitalize()} your Windows PC (in {delay}s)?"
+            return True, f"Put your Windows PC to {action}?"
+        return False, ""
+    if tool_name == "send_pc_file_to_phone":
+        raw_path = str(arguments.get("path", "") or "").strip()
+        return True, f"Send file '{_shorten(raw_path or 'file', 70)}' from your PC to your phone?"
     if tool_name == "manage_pc_app":
         action = str(arguments.get("action", "")).strip()
         target = str(arguments.get("target", "")).strip()
@@ -1169,6 +1184,34 @@ def summarize_tool_call(tool_name: str, arguments: dict[str, Any]) -> str:
         raw_path = str(arguments.get("path", "") or "").strip()
         name = os.path.basename(raw_path.replace("\\", "/")) if raw_path else ""
         return f"Read PC Image ('{_shorten(name or raw_path, 32)}')" if raw_path else "Read PC Image"
+    if tool_name == "control_pc_audio":
+        action = str(arguments.get("action", "") or "audio")
+        detail = arguments.get("device") or (
+            f"{arguments.get('volume_pct')}%" if arguments.get("volume_pct") is not None else ""
+        )
+        return f"PC Audio: {action} ({detail})" if detail else f"PC Audio: {action}"
+    if tool_name == "control_pc_display":
+        action = str(arguments.get("action", "") or "display")
+        pct = arguments.get("brightness_pct")
+        return f"PC Display: {action} ({pct}%)" if pct is not None else f"PC Display: {action}"
+    if tool_name == "control_pc_power":
+        return f"PC Power: {arguments.get('action', '')}"
+    if tool_name == "get_pc_status":
+        return "PC Status"
+    if tool_name == "arrange_pc_windows":
+        items = arguments.get("arrangements")
+        count = len(items) if isinstance(items, list) else 0
+        return f"Arrange {count} PC {'window' if count == 1 else 'windows'}"
+    if tool_name == "get_pc_layout":
+        return "PC Window Layout"
+    if tool_name == "read_clipboard":
+        return f"Read {str(arguments.get('target', 'pc')).upper()} Clipboard"
+    if tool_name == "write_clipboard":
+        return f"Write {str(arguments.get('target', 'pc')).upper()} Clipboard"
+    if tool_name == "send_pc_file_to_phone":
+        raw_path = str(arguments.get("path", "") or "").strip()
+        name = os.path.basename(raw_path.replace("\\", "/")) if raw_path else ""
+        return f"Send PC File ('{_shorten(name or raw_path, 32)}')" if raw_path else "Send PC File"
     return tool_name
 
 
@@ -2060,13 +2103,14 @@ class AgentEngine:
             return await self._prepare_phone_tool_call(session, tool_name, arguments)
         if tool_name in PC_CLICK_TOOLS:
             return await self._prepare_click_call(session, tool_name, arguments, client_id)
-        if tool_name == "read_pc_image" and not str(arguments.get("path", "") or "").strip():
+        if tool_name in ("read_pc_image", "send_pc_file_to_phone") and not str(arguments.get("path", "") or "").strip():
             session.tool_records.append(
-                ToolCallRecord(tool=tool_name, status="error", summary="Read PC Image (missing path)")
+                ToolCallRecord(tool=tool_name, status="error", summary=f"{summarize_tool_call(tool_name, arguments)} (missing path)")
             )
             return PreparedCall(
                 arguments=arguments,
                 needs_confirmation=False,
+                marks_screen_read=False,
                 early_output={"ok": False, "error": "'path' must be a non-empty file path on the PC."},
             )
         needs, description = check_confirmation_required(
@@ -2697,6 +2741,9 @@ class AgentEngine:
             )
             return {"ok": True, "phone_screen": screen_data}
 
+        if tool_name in ("read_clipboard", "write_clipboard"):
+            return await self._execute_clipboard_tool(session, tool_name, arguments, client_id, summary)
+
         if tool_name == "trigger_android_intent":
             action_payload = build_android_intent_payload(arguments)
             if self._phone_runs_remotely(session):
@@ -2737,6 +2784,44 @@ class AgentEngine:
             session.tool_records.append(
                 ToolCallRecord(tool=tool_name, status="error", summary=f"{summary} (failed)")
             )
+            return {"ok": False, "error": str(exc)}
+
+    async def _execute_clipboard_tool(
+        self,
+        session: AgentSession,
+        tool_name: str,
+        arguments: dict[str, Any],
+        client_id: str | None,
+        summary: str,
+    ) -> dict[str, Any]:
+        target = str(arguments.get("target", "pc") or "pc").strip().lower()
+        if target == "phone":
+            if self._remote_stopped(session):
+                result = self._stopped_on_phone_result()
+            elif tool_name == "read_clipboard":
+                result = await self.phone_bridge.read_clipboard()
+            else:
+                result = await self.phone_bridge.write_clipboard(str(arguments.get("text", "")))
+            ok = result.get("ok") is not False
+            label = summary if ok else f"{summary} ({result.get('reason', 'not done')})"
+            session.tool_records.append(ToolCallRecord(tool=tool_name, status="ok" if ok else "error", summary=label))
+            return {"ok": ok, "target": "phone", "result": result}
+
+        pc_tool = "read_pc_clipboard" if tool_name == "read_clipboard" else "write_pc_clipboard"
+        pc_args = {} if tool_name == "read_clipboard" else {"text": str(arguments.get("text", ""))}
+        try:
+            _cid, cname, result = await self.client_hub.call_tool(
+                tool_name=pc_tool,
+                arguments=pc_args,
+                client_id=client_id,
+            )
+            ok = not (isinstance(result, dict) and result.get("ok") is False)
+            label = f"{summary} ({cname})" if ok else f"{summary} ({cname}: not done)"
+            session.tool_records.append(ToolCallRecord(tool=tool_name, status="ok" if ok else "error", summary=label))
+            return {"ok": ok, "target": "pc", "client": cname, "result": result}
+        except (NoClientConnectedError, ClientDispatchError, ValueError) as exc:
+            LOGGER.warning("Clipboard tool '%s' failed: %s", tool_name, exc)
+            session.tool_records.append(ToolCallRecord(tool=tool_name, status="error", summary=f"{summary} (failed)"))
             return {"ok": False, "error": str(exc)}
 
     async def _send_remote_intent(

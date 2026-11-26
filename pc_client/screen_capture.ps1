@@ -6,8 +6,9 @@
 #               small JPEG to OutPath.
 #   screenshot  Capture a clean region (or full primary screen), resize to MaxWidth and save
 #               a JPEG to OutPath.
-#   load_image  Load an existing image file from InPath, resize to MaxWidth and save a JPEG
-#               to OutPath.
+#   load_image       Load an existing image file from InPath, resize to MaxWidth and save a JPEG
+#                    to OutPath.
+#   clipboard_image  Save any bitmap currently on the Windows clipboard as a resized JPEG to OutPath.
 # Always prints exactly one compact JSON object on stdout.
 
 param(
@@ -230,11 +231,26 @@ function Invoke-LoadImageMode {
     } finally { $img.Dispose() }
 }
 
+function Invoke-ClipboardImageMode {
+    if ([string]::IsNullOrWhiteSpace($OutPath)) { throw 'OutPath is required for clipboard_image mode' }
+    Add-Type -AssemblyName System.Windows.Forms
+    $img = [System.Windows.Forms.Clipboard]::GetImage()
+    if ($null -eq $img) { return @{ ok = $false; error = 'no_clipboard_image' } }
+    try {
+        $bmp = New-Object System.Drawing.Bitmap($img)
+        try {
+            return Save-ResizedJpeg $bmp $OutPath $MaxWidth $Quality
+        } finally { $bmp.Dispose() }
+    } finally { $img.Dispose() }
+}
+
 try {
     Enable-DpiAwareness
     Add-Type -AssemblyName System.Drawing
     if ($Mode -eq 'load_image') {
         Write-Result (Invoke-LoadImageMode)
+    } elseif ($Mode -eq 'clipboard_image') {
+        Write-Result (Invoke-ClipboardImageMode)
     } else {
         $region = Resolve-Region
         if ($region.w -le 0 -or $region.h -le 0) { throw 'Empty capture region' }

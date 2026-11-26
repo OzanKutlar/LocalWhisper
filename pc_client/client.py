@@ -13,12 +13,15 @@ import socket
 import subprocess
 import sys
 import tempfile
+import webbrowser
 from pathlib import Path
 from urllib.parse import urlencode
 
 import websockets
 
 from ahk_payload import build_send_units, plan_typing_delay_ms
+from handoff_client import download_handoff_file, handle_pushed_text, http_base_from_ws
+from pc_clipboard import write_clipboard_text
 from pc_tools import dispatch_pc_tool, enable_dpi_awareness
 
 logging.basicConfig(
@@ -126,6 +129,7 @@ async def handle_message(
     ahk_exe: Path,
     send_mode: str,
     human_typing: bool,
+    server_http_base: str = "",
 ) -> None:
     try:
         message = json.loads(raw_message)
@@ -140,6 +144,17 @@ async def handle_message(
             message.get("name"),
             message.get("client_id"),
         )
+        return
+
+    if msg_type == "file_offer":
+        if server_http_base:
+            asyncio.create_task(_download_file_offer(server_http_base, message))
+        return
+
+    if msg_type == "clipboard_push":
+        pushed = str(message.get("text", "") or "")
+        if pushed:
+            await asyncio.to_thread(_apply_clipboard_push, pushed)
         return
 
     if msg_type == "tool_call":
@@ -157,6 +172,7 @@ async def handle_message(
                 send_mode,
                 human_typing,
                 execute_ahk_send,
+                server_http_base,
             )
             reply = {"type": "tool_result", "id": request_id, "ok": True, "result": result}
         except Exception as exc:
@@ -181,6 +197,22 @@ async def handle_message(
     await websocket.send(json.dumps(ack))
 
 
+async def _download_file_offer(server_http_base: str, offer: dict[str, object]) -> None:
+    try:
+        saved = await asyncio.to_thread(download_handoff_file, server_http_base, offer)
+        LOGGER.info("Received file from handoff: %s", saved)
+    except Exception as exc:  # noqa: BLE001 - background download must not crash client loop
+        LOGGER.warning("Failed to download offered file '%s': %s", offer.get("name"), exc)
+
+
+def _apply_clipboard_push(text: str) -> None:
+    try:
+        outcome = handle_pushed_text(text, write_clipboard_text, webbrowser.open)
+        LOGGER.info("Applied pushed text: %s", outcome.get("action"))
+    except Exception as exc:  # noqa: BLE001 - never break WS loop
+        LOGGER.warning("Failed to apply pushed clipboard/link: %s", exc)
+
+
 async def run_client(
     server_url: str,
     client_name: str,
@@ -189,6 +221,7 @@ async def run_client(
     human_typing: bool,
 ) -> None:
     ws_url = build_ws_url(server_url, client_name)
+    server_http_base = http_base_from_ws(server_url)
     LOGGER.info("Using AutoHotkey: %s", ahk_exe)
     LOGGER.info("Target server: %s", ws_url)
 
@@ -204,7 +237,9 @@ async def run_client(
                 backoff_s = 2
                 async for raw_message in websocket:
                     if isinstance(raw_message, str):
-                        await handle_message(websocket, raw_message, ahk_exe, send_mode, human_typing)
+                        await handle_message(
+                            websocket, raw_message, ahk_exe, send_mode, human_typing, server_http_base
+                        )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
