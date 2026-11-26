@@ -159,6 +159,11 @@ class AssistantActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        isDismissing = false
+        if (intent.getBooleanExtra(EXTRA_RESTORED_AFTER_PHONE_WORK, false)) {
+            intent.removeExtra(EXTRA_RESTORED_AFTER_PHONE_WORK)
+            animateContentIn()
+        }
         AgentRuntimeManager.setActivityVisible(true)
         val runtimeState = AgentRuntimeManager.state.value
         if (runtimeState.phase != AgentRuntimePhase.IDLE) {
@@ -375,8 +380,8 @@ class AssistantActivity : AppCompatActivity() {
                     }
                 }
                 launch {
-                    AgentRuntimeManager.minimizeRequests.collect {
-                        minimizeToCornerPill(immediate = true)
+                    AgentRuntimeManager.hideRequests.collect {
+                        hideForPhoneWork()
                     }
                 }
             }
@@ -601,17 +606,8 @@ class AssistantActivity : AppCompatActivity() {
         if (text.isEmpty()) return
         binding.interjectInput.setText("")
         hideKeyboard()
-        val runtimeState = AgentRuntimeManager.state.value
-        val shouldAutoMinimize = (runtimeState.isPhoneFocused || isLocalTargetSelected()) &&
-            LocalTypingService.isRunning()
-        AgentRuntimeManager.interject(
-            context = this,
-            instruction = text,
-            waitForActivityHide = shouldAutoMinimize
-        )
-        if (shouldAutoMinimize) {
-            minimizeToCornerPill(immediate = false)
-        }
+        // The overlay stays open; the runtime hides it only while it acts on the phone.
+        AgentRuntimeManager.interject(context = this, instruction = text)
     }
 
     private fun startRecording() {
@@ -763,18 +759,14 @@ class AssistantActivity : AppCompatActivity() {
         hideKeyboard()
         val isPhoneTarget = isLocalTargetSelected()
         val targetClientId = if (isPhoneTarget) null else selectedClient?.id
-        val shouldAutoMinimize = isPhoneTarget && LocalTypingService.isRunning()
+        // The overlay stays open; the runtime hides it only while it acts on the phone.
         AgentRuntimeManager.startTurn(
             context = this,
             prompt = prompt,
             clientId = targetClientId,
             sessionId = agentSessionId,
-            isPhoneTarget = isPhoneTarget,
-            waitForActivityHide = shouldAutoMinimize
+            isPhoneTarget = isPhoneTarget
         )
-        if (shouldAutoMinimize) {
-            minimizeToCornerPill(immediate = false)
-        }
     }
 
     private fun submitAgentConfirmation(approved: Boolean, rejectionReason: String? = null) {
@@ -947,9 +939,27 @@ class AssistantActivity : AppCompatActivity() {
     }
 
     /** Animates or immediately closes the sheet while keeping the corner pill and background agent alive. */
+    /**
+     * Moves the overlay out of the way while the agent acts on the phone. The activity stays alive
+     * (chat thread, scroll position and typed text are kept) and the runtime brings it back afterwards.
+     */
+    private fun hideForPhoneWork() {
+        if (isDismissing) return
+        hideKeyboard()
+        if (moveTaskToBack(true)) return
+        Log.w(TAG, "Could not move the overlay to the back; closing it for phone work")
+        isDismissing = true
+        AgentRuntimeManager.setActivityVisible(false)
+        finish()
+        @Suppress("DEPRECATION")
+        overridePendingTransition(0, 0)
+    }
+
     private fun minimizeToCornerPill(immediate: Boolean) {
         if (isDismissing) return
         isDismissing = true
+        // A user minimize: the agent must not bring the overlay back by itself.
+        AgentRuntimeManager.onUserHidOverlay()
         AgentRuntimeManager.setActivityVisible(false)
         sessionStore.recordOverlayClosed()
         stopTimer()
@@ -1850,6 +1860,7 @@ class AssistantActivity : AppCompatActivity() {
         const val EXTRA_ATTACH_ACTIVE_AGENT = "attach_active_agent"
         const val EXTRA_FOCUS_INTERJECT = "focus_interject"
         const val EXTRA_FOCUS_REJECTION_REASON = "focus_rejection_reason"
+        const val EXTRA_RESTORED_AFTER_PHONE_WORK = "restored_after_phone_work"
         private const val TAG = "LW-Assistant"
         private const val TIMER_TICK_MS = 250L
         private const val SENT_DISMISS_DELAY_MS = 650L

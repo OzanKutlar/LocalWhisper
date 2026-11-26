@@ -1140,6 +1140,26 @@ class LocalTypingService : AccessibilityService() {
         /** True when LocalTypingService is connected and able to host the floating overlay. */
         fun isRunning(): Boolean = instance != null
 
+        /**
+         * Brings the assistant overlay back after the agent acted on the phone. Started from the
+         * accessibility service, which may start activities while the app is in the background.
+         */
+        fun bringAssistantToFront(): Boolean {
+            val service = instance ?: return false
+            val intent = Intent(service, AssistantActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                putExtra(AssistantActivity.EXTRA_ATTACH_ACTIVE_AGENT, true)
+                putExtra(AssistantActivity.EXTRA_RESTORED_AFTER_PHONE_WORK, true)
+            }
+            return try {
+                service.startActivity(intent)
+                true
+            } catch (exc: Exception) {
+                Log.w(TAG, "Could not bring the assistant overlay to the front", exc)
+                false
+            }
+        }
+
         /** Queues text to type into the focused field. Returns false when the service is off. */
         fun enqueue(text: String): Boolean {
             if (text.isEmpty()) return false

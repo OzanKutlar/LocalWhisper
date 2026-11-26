@@ -67,6 +67,8 @@ object AgentRuntimeManager {
     private const val MINIMIZE_WAIT_STEP_MS = 25L
     private const val FOREGROUND_SETTLE_MS = 180L
     private const val MAX_STEP_SUMMARY_CHARS = 28
+    /** Delay before the overlay returns after phone work, so back-to-back steps do not flicker. */
+    private const val RESTORE_GRACE_MS = 600L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val api = LocalWhisperApi()
@@ -75,8 +77,15 @@ object AgentRuntimeManager {
     private val _state = MutableStateFlow(AgentRuntimeState())
     val state: StateFlow<AgentRuntimeState> = _state.asStateFlow()
 
-    private val _minimizeRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 2)
-    val minimizeRequests: SharedFlow<Unit> = _minimizeRequests.asSharedFlow()
+    private val _hideRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 2)
+
+    /** Emitted when the overlay must move out of the way so the agent can act on the phone. */
+    val hideRequests: SharedFlow<Unit> = _hideRequests.asSharedFlow()
+
+    /** True while the overlay is hidden because the agent hid it; a user minimize clears it. */
+    private var hiddenByAgent = false
+    private var phoneWorkDepth = 0
+    private var restoreJob: Job? = null
 
     @Volatile
     private var appContext: Context? = null
@@ -95,7 +104,24 @@ object AgentRuntimeManager {
     }
 
     fun setActivityVisible(visible: Boolean) {
+        if (visible) {
+            // Shown again (restored, or reopened by the user): nothing is pending any more.
+            hiddenByAgent = false
+            restoreJob?.cancel()
+            restoreJob = null
+        }
         _state.update { it.copy(activityVisible = visible) }
+    }
+
+    /** The user minimized or closed the overlay; the agent must not bring it back by itself. */
+    fun onUserHidOverlay() {
+        cancelOverlayRestore()
+    }
+
+    private fun cancelOverlayRestore() {
+        hiddenByAgent = false
+        restoreJob?.cancel()
+        restoreJob = null
     }
 
     fun pause() {
@@ -128,6 +154,7 @@ object AgentRuntimeManager {
     /** Cancels any active agent stream and clears the runtime state back to IDLE. */
     fun stop() {
         pauseGate.resume()
+        cancelOverlayRestore()
         activeJob?.cancel()
         activeJob = null
         _state.update { current ->
@@ -144,6 +171,7 @@ object AgentRuntimeManager {
     fun dismissFinishedState() {
         val phase = _state.value.phase
         if (phase == AgentRuntimePhase.COMPLETED || phase == AgentRuntimePhase.ERROR) {
+            cancelOverlayRestore()
             _state.update { current ->
                 AgentRuntimeState(
                     phase = AgentRuntimePhase.IDLE,
@@ -167,7 +195,7 @@ object AgentRuntimeManager {
     }
 
     /** Interrupts the current in-flight agent work and steers the session with a user correction. */
-    fun interject(context: Context, instruction: String, waitForActivityHide: Boolean = false) {
+    fun interject(context: Context, instruction: String) {
         val clean = instruction.trim()
         if (clean.isEmpty()) return
         init(context)
@@ -180,7 +208,6 @@ object AgentRuntimeManager {
             clientId = targetClientId,
             sessionId = current.sessionId,
             isPhoneTarget = current.isPhoneFocused || targetClientId == null,
-            waitForActivityHide = waitForActivityHide,
             interjection = true
         )
     }
@@ -191,7 +218,6 @@ object AgentRuntimeManager {
         clientId: String?,
         sessionId: String?,
         isPhoneTarget: Boolean,
-        waitForActivityHide: Boolean,
         interjection: Boolean = false
     ) {
         init(context)
@@ -237,11 +263,13 @@ object AgentRuntimeManager {
 
         activeJob = scope.launch {
             try {
-                if (waitForActivityHide && LocalTypingService.isRunning()) {
-                    waitUntilActivityHidden()
-                }
                 pauseGate.awaitUnpaused()
-                val phoneScreenSnapshot = LocalTypingService.capturePhoneScreenSnapshot()
+                // Reading the phone screen needs the app underneath on top, so the overlay steps aside briefly.
+                val phoneScreenSnapshot = if (isPhoneTarget) {
+                    withPhoneWork { LocalTypingService.capturePhoneScreenSnapshot() }
+                } else {
+                    LocalTypingService.capturePhoneScreenSnapshot()
+                }
                 _state.update {
                     if (it.phase == AgentRuntimePhase.THINKING) {
                         it.copy(stepSummary = "Thinking…")
@@ -329,10 +357,14 @@ object AgentRuntimeManager {
                 var phoneActionResult: JSONObject? = null
                 var updatedPhoneScreen: JSONObject? = null
                 if (approved && pending.phoneAction != null) {
-                    ensureActivityMinimizedForPhoneWork()
                     pauseGate.awaitUnpaused()
-                    phoneActionResult = LocalTypingService.executePhoneUiAction(pending.phoneAction)
-                    updatedPhoneScreen = LocalTypingService.capturePhoneScreenSnapshot()
+                    val outcome = withPhoneWork {
+                        pauseGate.awaitUnpaused()
+                        LocalTypingService.executePhoneUiAction(pending.phoneAction) to
+                            LocalTypingService.capturePhoneScreenSnapshot()
+                    }
+                    phoneActionResult = outcome.first
+                    updatedPhoneScreen = outcome.second
                 }
                 val result = api.confirmAgentActionStream(
                     baseUrl = baseUrl,
@@ -461,9 +493,10 @@ object AgentRuntimeManager {
     ): List<String> {
         if (actions.isEmpty()) return emptyList()
         pauseGate.awaitUnpaused()
-        ensureActivityMinimizedForPhoneWork()
-        pauseGate.awaitUnpaused()
-        return AndroidActionExecutor.executeAll(ctx, actions)
+        return withPhoneWork {
+            pauseGate.awaitUnpaused()
+            AndroidActionExecutor.executeAll(ctx, actions)
+        }
     }
 
     /** Runs one automatic phone step (screen capture or scroll) and resumes the server turn. */
@@ -489,10 +522,11 @@ object AgentRuntimeManager {
             )
         }
         pauseGate.awaitUnpaused()
-        ensureActivityMinimizedForPhoneWork()
-        pauseGate.awaitUnpaused()
-        val phoneActionResult = LocalTypingService.executePhoneUiAction(phoneAction)
-        val updatedPhoneScreen = LocalTypingService.capturePhoneScreenSnapshot()
+        val (phoneActionResult, updatedPhoneScreen) = withPhoneWork {
+            pauseGate.awaitUnpaused()
+            LocalTypingService.executePhoneUiAction(phoneAction) to
+                LocalTypingService.capturePhoneScreenSnapshot()
+        }
         _state.update {
             it.copy(
                 phase = if (pauseGate.isPaused) AgentRuntimePhase.PAUSED else AgentRuntimePhase.THINKING,
@@ -562,10 +596,52 @@ object AgentRuntimeManager {
         }
     }
 
-    private suspend fun ensureActivityMinimizedForPhoneWork() {
+    /**
+     * Runs [block] (an action on the phone) with the overlay out of the way. The overlay is hidden
+     * only if visible, and comes back [RESTORE_GRACE_MS] after the last phone work ends.
+     */
+    private suspend fun <T> withPhoneWork(block: suspend () -> T): T {
+        restoreJob?.cancel()
+        restoreJob = null
+        phoneWorkDepth++
+        try {
+            hideOverlayForPhoneWork()
+            return block()
+        } finally {
+            phoneWorkDepth = (phoneWorkDepth - 1).coerceAtLeast(0)
+            scheduleOverlayRestore()
+        }
+    }
+
+    private suspend fun hideOverlayForPhoneWork() {
         if (!_state.value.activityVisible || !LocalTypingService.isRunning()) return
-        _minimizeRequests.tryEmit(Unit)
+        hiddenByAgent = true
+        _hideRequests.tryEmit(Unit)
         waitUntilActivityHidden()
+    }
+
+    private fun scheduleOverlayRestore() {
+        if (!hiddenByAgent || phoneWorkDepth > 0) return
+        restoreJob?.cancel()
+        restoreJob = scope.launch {
+            delay(RESTORE_GRACE_MS)
+            restoreOverlayIfDue()
+        }
+    }
+
+    private fun restoreOverlayIfDue() {
+        val current = _state.value
+        val due = OverlayVisibilityPolicy.shouldRestore(
+            phase = current.phase,
+            phoneWorkActive = phoneWorkDepth > 0,
+            hiddenByAgent = hiddenByAgent,
+            activityVisible = current.activityVisible
+        )
+        if (!due) return
+        hiddenByAgent = false
+        if (!LocalTypingService.bringAssistantToFront()) {
+            Log.w(TAG, "Could not bring the agent overlay back after phone work")
+        }
     }
 
     private suspend fun waitUntilActivityHidden() {

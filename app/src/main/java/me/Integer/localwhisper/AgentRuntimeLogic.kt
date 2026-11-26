@@ -80,3 +80,21 @@ object OverlayGeometry {
         return px in (left - pad)..(right + pad) && py in (top - pad)..(bottom + pad)
     }
 }
+
+/** Decides when the agent overlay, hidden so the agent could act on the phone, should come back. */
+object OverlayVisibilityPolicy {
+
+    /**
+     * True only when the agent itself hid the overlay, no phone work is running, the overlay is
+     * still hidden, and a run is still active (thinking, paused, awaiting approval, done or error).
+     */
+    fun shouldRestore(
+        phase: AgentRuntimePhase,
+        phoneWorkActive: Boolean,
+        hiddenByAgent: Boolean,
+        activityVisible: Boolean
+    ): Boolean {
+        if (!hiddenByAgent || phoneWorkActive || activityVisible) return false
+        return phase != AgentRuntimePhase.IDLE
+    }
+}

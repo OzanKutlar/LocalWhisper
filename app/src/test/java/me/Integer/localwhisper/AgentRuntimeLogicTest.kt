@@ -95,4 +95,48 @@ class AgentRuntimeLogicTest {
             )
         )
     }
+
+    @Test
+    fun overlayReturnsAfterTheAgentHidIt() {
+        for (phase in listOf(
+            AgentRuntimePhase.THINKING,
+            AgentRuntimePhase.WAITING_CONFIRMATION,
+            AgentRuntimePhase.COMPLETED,
+            AgentRuntimePhase.ERROR
+        )) {
+            assertTrue(
+                phase.name,
+                OverlayVisibilityPolicy.shouldRestore(
+                    phase = phase,
+                    phoneWorkActive = false,
+                    hiddenByAgent = true,
+                    activityVisible = false
+                )
+            )
+        }
+    }
+
+    @Test
+    fun overlayStaysHiddenAfterUserMinimizeDuringPhoneWorkOrWhenIdle() {
+        assertFalse(
+            OverlayVisibilityPolicy.shouldRestore(
+                AgentRuntimePhase.THINKING, phoneWorkActive = false, hiddenByAgent = false, activityVisible = false
+            )
+        )
+        assertFalse(
+            OverlayVisibilityPolicy.shouldRestore(
+                AgentRuntimePhase.THINKING, phoneWorkActive = true, hiddenByAgent = true, activityVisible = false
+            )
+        )
+        assertFalse(
+            OverlayVisibilityPolicy.shouldRestore(
+                AgentRuntimePhase.IDLE, phoneWorkActive = false, hiddenByAgent = true, activityVisible = false
+            )
+        )
+        assertFalse(
+            OverlayVisibilityPolicy.shouldRestore(
+                AgentRuntimePhase.THINKING, phoneWorkActive = false, hiddenByAgent = true, activityVisible = true
+            )
+        )
+    }
 }
