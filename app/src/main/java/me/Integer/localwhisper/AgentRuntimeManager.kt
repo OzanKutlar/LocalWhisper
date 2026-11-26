@@ -497,7 +497,7 @@ object AgentRuntimeManager {
         pauseGate.awaitUnpaused()
         return withPhoneWork {
             pauseGate.awaitUnpaused()
-            AndroidActionExecutor.executeAll(ctx, actions)
+            AndroidActionExecutor.executeAllSpaced(ctx, actions)
         }
     }
 

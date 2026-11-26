@@ -101,7 +101,7 @@ object PhoneRpcDispatcher {
                 seconds = act.optInt("seconds", 0),
                 urlOrQuery = act.optString("url_or_query", "")
             )
-            val outcome = AndroidActionExecutor.executeSingle(context, clientAction)
+            val outcome = AndroidActionExecutor.executeSpaced(context, clientAction)
             val ok = !outcome.startsWith("Could not") && !outcome.startsWith("Unsupported")
             JSONObject().apply {
                 put("ok", ok)
