@@ -4,3 +4,6 @@ psutil>=6.0.0
 pycaw>=20240210
 comtypes>=1.4.0
 screen-brightness-control>=0.22.0
+PySide6-Essentials>=6.7.0
+sounddevice>=0.4.6
+numpy>=1.26.0

@@ -13,6 +13,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+from typing import Any, Callable
 import webbrowser
 from pathlib import Path
 from urllib.parse import urlencode
@@ -21,6 +23,8 @@ import websockets
 
 from ahk_payload import build_send_units, plan_typing_delay_ms
 from handoff_client import download_handoff_file, handle_pushed_text, http_base_from_ws
+from overlay.settings import OverlaySettings
+from overlay.step_aside import requires_step_aside
 from pc_clipboard import write_clipboard_text
 from pc_tools import dispatch_pc_tool, enable_dpi_awareness
 
@@ -130,6 +134,8 @@ async def handle_message(
     send_mode: str,
     human_typing: bool,
     server_http_base: str = "",
+    on_welcome: Callable[[str, str], None] | None = None,
+    step_aside_runner: Callable[[Callable[[], Any]], Any] | None = None,
 ) -> None:
     try:
         message = json.loads(raw_message)
@@ -139,11 +145,11 @@ async def handle_message(
 
     msg_type = message.get("type")
     if msg_type == "welcome":
-        LOGGER.info(
-            "Registered with server as '%s' [id=%s]",
-            message.get("name"),
-            message.get("client_id"),
-        )
+        cid = str(message.get("client_id", "") or "")
+        cname = str(message.get("name", "") or "")
+        LOGGER.info("Registered with server as '%s' [id=%s]", cname, cid)
+        if on_welcome is not None:
+            on_welcome(cid, cname)
         return
 
     if msg_type == "file_offer":
@@ -163,9 +169,8 @@ async def handle_message(
         raw_args = message.get("arguments")
         arguments = raw_args if isinstance(raw_args, dict) else {}
         LOGGER.info("Executing agent tool '%s'", tool_name)
-        try:
-            result = await asyncio.to_thread(
-                dispatch_pc_tool,
+        def _invoke_tool() -> dict[str, Any]:
+            call = lambda: dispatch_pc_tool(
                 tool_name,
                 arguments,
                 ahk_exe,
@@ -174,6 +179,12 @@ async def handle_message(
                 execute_ahk_send,
                 server_http_base,
             )
+            if step_aside_runner is not None and requires_step_aside(tool_name):
+                return step_aside_runner(call)
+            return call()
+
+        try:
+            result = await asyncio.to_thread(_invoke_tool)
             reply = {"type": "tool_result", "id": request_id, "ok": True, "result": result}
         except Exception as exc:
             LOGGER.error("Agent tool '%s' failed: %s", tool_name, exc)
@@ -187,8 +198,15 @@ async def handle_message(
     request_id = str(message.get("id", ""))
     text = str(message.get("text", ""))
     LOGGER.info("Executing keystrokes (%d chars) via AHK (%s)", len(text), send_mode)
+    def _invoke_send() -> None:
+        call = lambda: execute_ahk_send(ahk_exe, text, send_mode, human_typing)
+        if step_aside_runner is not None:
+            step_aside_runner(call)
+        else:
+            call()
+
     try:
-        await asyncio.to_thread(execute_ahk_send, ahk_exe, text, send_mode, human_typing)
+        await asyncio.to_thread(_invoke_send)
         ack = {"type": "ack", "id": request_id, "ok": True}
     except Exception as exc:
         LOGGER.error("AHK send failed: %s", exc)
@@ -219,6 +237,9 @@ async def run_client(
     ahk_exe: Path,
     send_mode: str,
     human_typing: bool,
+    on_welcome: Callable[[str, str], None] | None = None,
+    step_aside_runner: Callable[[Callable[[], Any]], Any] | None = None,
+    stop_event: threading.Event | None = None,
 ) -> None:
     ws_url = build_ws_url(server_url, client_name)
     server_http_base = http_base_from_ws(server_url)
@@ -228,6 +249,8 @@ async def run_client(
 
     backoff_s = 2
     for attempt in range(1, MAX_RECONNECT_ATTEMPTS + 1):
+        if stop_event is not None and stop_event.is_set():
+            return
         try:
             async with websockets.connect(
                 ws_url,
@@ -237,9 +260,18 @@ async def run_client(
             ) as websocket:
                 backoff_s = 2
                 async for raw_message in websocket:
+                    if stop_event is not None and stop_event.is_set():
+                        return
                     if isinstance(raw_message, str):
                         await handle_message(
-                            websocket, raw_message, ahk_exe, send_mode, human_typing, server_http_base
+                            websocket,
+                            raw_message,
+                            ahk_exe,
+                            send_mode,
+                            human_typing,
+                            server_http_base,
+                            on_welcome=on_welcome,
+                            step_aside_runner=step_aside_runner,
                         )
         except asyncio.CancelledError:
             raise
@@ -284,6 +316,31 @@ def parse_args() -> argparse.Namespace:
         default="human",
         help="Typing pace (default: human; instant sends everything at once)",
     )
+    parser.add_argument(
+        "--no-overlay",
+        action="store_true",
+        help="Run headless without the PC Jarvis popup overlay",
+    )
+    parser.add_argument(
+        "--hotkey",
+        default=None,
+        help="Global hotkey to summon the Jarvis popup (default: Ctrl+Alt+Space)",
+    )
+    parser.add_argument(
+        "--start-typing",
+        action="store_true",
+        help="Open the PC popup in keyboard mode by default instead of listening",
+    )
+    parser.add_argument(
+        "--dictation-default",
+        action="store_true",
+        help="Open the PC popup in raw dictation mode instead of Agent mode",
+    )
+    parser.add_argument(
+        "--language",
+        default=None,
+        help="Optional ASR language hint for PC voice recordings",
+    )
     return parser.parse_args()
 
 
@@ -297,9 +354,61 @@ def main() -> int:
         LOGGER.error("%s", exc)
         return 1
 
+    human_typing = args.typing == "human"
+    if not args.no_overlay:
+        try:
+            from overlay.app import run_with_overlay  # noqa: PLC0415
+        except ImportError as exc:
+            LOGGER.warning(
+                "PySide6 overlay unavailable (%s); running headless. "
+                'Install with: "%s" -m pip install -r pc_client/requirements.txt',
+                exc,
+                sys.executable,
+            )
+        else:
+            settings = OverlaySettings.load()
+            if args.hotkey:
+                settings.hotkey = args.hotkey.strip()
+            if args.start_typing:
+                settings.start_in_keyboard_mode = True
+            if args.dictation_default:
+                settings.start_in_agent_mode = False
+            if args.language is not None:
+                settings.language = args.language.strip()
+            settings.save()
+
+            def _ws_thread_runner(controller: Any, stop_evt: threading.Event) -> None:
+                try:
+                    asyncio.run(
+                        run_client(
+                            args.server,
+                            args.name,
+                            ahk_exe,
+                            args.send_mode,
+                            human_typing,
+                            on_welcome=controller.set_own_client_id,
+                            step_aside_runner=controller.step_aside.run_with_step_aside,
+                            stop_event=stop_evt,
+                        )
+                    )
+                except Exception as exc:
+                    LOGGER.warning("WebSocket loop stopped: %s", exc)
+
+            return run_with_overlay(
+                server_url=args.server,
+                server_http_base=http_base_from_ws(args.server),
+                client_name=args.name,
+                ahk_exe=ahk_exe,
+                send_mode=args.send_mode,
+                human_typing=human_typing,
+                settings=settings,
+                execute_ahk_send_fn=execute_ahk_send,
+                ws_runner_fn=_ws_thread_runner,
+            )
+
     try:
         asyncio.run(
-            run_client(args.server, args.name, ahk_exe, args.send_mode, args.typing == "human")
+            run_client(args.server, args.name, ahk_exe, args.send_mode, human_typing)
         )
     except KeyboardInterrupt:
         LOGGER.info("LocalWhisper PC client stopped.")
