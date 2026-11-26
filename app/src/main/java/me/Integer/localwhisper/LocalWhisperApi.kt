@@ -90,6 +90,21 @@ data class AgentStreamProgress(
     val reply: String
 )
 
+data class SceneInfo(
+    val name: String,
+    val description: String,
+    val stepCount: Int,
+    val needsApproval: Boolean
+)
+
+data class SceneRunResponse(
+    val status: String,
+    val ok: Boolean,
+    val description: String,
+    val stepsOk: Int,
+    val stepsRun: Int
+)
+
 data class UpdateTriggerResponse(
     val status: String,
     val updateId: String,
@@ -271,6 +286,59 @@ class LocalWhisperApi {
                 status = json.optString("status", "sent"),
                 clientId = json.optString("client_id", ""),
                 clientName = json.optString("client_name", "PC")
+            )
+        }
+    }
+
+    suspend fun fetchScenes(baseUrl: String): Result<List<SceneInfo>> = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl/api/scenes")
+            .get()
+            .build()
+        executeJsonRequest(request) { json ->
+            val array = json.optJSONArray("scenes") ?: JSONArray()
+            val scenes = ArrayList<SceneInfo>(array.length())
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val name = item.optString("name", "").trim()
+                if (name.isEmpty()) continue
+                scenes.add(
+                    SceneInfo(
+                        name = name,
+                        description = item.optString("description", ""),
+                        stepCount = item.optInt("step_count", 0),
+                        needsApproval = item.optBoolean("needs_approval", false)
+                    )
+                )
+            }
+            scenes
+        }
+    }
+
+    suspend fun runScene(
+        baseUrl: String,
+        name: String,
+        approved: Boolean,
+        clientId: String?
+    ): Result<SceneRunResponse> = withContext(Dispatchers.IO) {
+        val encoded = java.net.URLEncoder.encode(name, "UTF-8").replace("+", "%20")
+        val payload = JSONObject().apply {
+            put("approved", approved)
+            if (!clientId.isNullOrBlank()) {
+                put("client_id", clientId)
+            }
+        }
+        val request = Request.Builder()
+            .url("$baseUrl/api/scenes/$encoded/run")
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        executeJsonRequest(request) { json ->
+            SceneRunResponse(
+                status = json.optString("status", "completed"),
+                ok = json.optBoolean("ok", false),
+                description = json.optString("description", ""),
+                stepsOk = json.optInt("steps_ok", 0),
+                stepsRun = json.optInt("steps_run", 0)
             )
         }
     }

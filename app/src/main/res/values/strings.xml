@@ -222,6 +222,15 @@
     <string name="row_mirror_notifications">Mirror notifications to PC</string>
     <string name="row_mirror_notifications_hint">Show allowed phone notifications as corner cards on your PC</string>
 
+    <!-- Scenes -->
+    <string name="scene_chip_format">▶ %1$s</string>
+    <string name="scene_running_format">Running scene %1$s…</string>
+    <string name="scene_confirm_title">Run scene?</string>
+    <string name="scene_confirm_default_format">Run scene %1$s?</string>
+    <string name="scene_confirm_run">Run</string>
+    <string name="scene_done_format">Scene %1$s: %2$d/%3$d steps OK</string>
+    <string name="scene_failed_format">Could not run scene %1$s</string>
+
     <!-- Local (phone) typing -->
     <string name="local_typing_service_label">LocalWhisper typing</string>
     <string name="local_typing_service_description">Types the text you send to This phone from the LocalWhisper assistant into the text field you were using. It does nothing else.</string>

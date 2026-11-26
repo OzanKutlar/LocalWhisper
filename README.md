@@ -88,3 +88,57 @@ python push.py
 7. **Typing on the phone itself:** in the app, tap **Type on this phone** and enable *LocalWhisper typing* under Accessibility. Then tap the *Target:* line in the overlay and pick **This phone**. The text is inserted at the cursor of the field you were using (`{…}` tokens are typed literally, not as keys). If typing is not possible, the text is copied to the clipboard instead. On Android 13+, if the toggle is greyed out, open **App info → ⋮ → Allow restricted settings** first.
 
 > Only `{…}` tokens are treated as AutoHotkey keys; everything else (including `! + ^ #`) is typed literally. Inside braces, AutoHotkey syntax applies: `{Enter}`, `{Tab 3}`, `{Ctrl down}`, and modifier combos like `{^a}` (Ctrl+A), `{^+Tab}` (Ctrl+Shift+Tab) or `{!F4}` (Alt+F4).
+
+---
+
+## 4. PC Jarvis Popup
+
+The PC client also runs a popup that matches the phone overlay. Install its packages into the same Python that runs the client:
+
+```bash
+python -m pip install -r pc_client/requirements.txt
+```
+
+- Press **`Ctrl+Alt+Space`** (change with `--hotkey`) to open the popup under your mouse. It starts listening at once and stops after about 1.2 s of silence.
+- Start typing while it listens to switch to the keyboard. `Enter` sends, `Shift+Enter` adds a new line, `Esc` closes.
+- The sparkle button switches between **Agent** and **dictation**. Dictating to *This PC* returns focus to the window you were in and types there.
+- In Agent mode, paste (`Ctrl+V`) or drag an image onto the popup to attach it to your prompt.
+- While the agent works you can shrink the popup to a corner pill (Pause, Interject, Open, Stop). The popup steps aside and is left out of screenshots whenever the agent looks at or acts on this PC.
+- Flags: `--no-overlay` (headless), `--start-typing`, `--dictation-default`, `--language <hint>`.
+
+## 5. Phone Link, Notifications & File Handoff
+
+The phone keeps a WebSocket link to the server (`/ws/phone`) while the LocalWhisper app, its typing accessibility service or its notification listener is running. It holds no wake locks and sends no keep-alive pings, and it reconnects when the screen turns on or the network changes.
+
+In the app, under **Phone link & permissions**:
+- **Do Not Disturb access**: lets the agent toggle Do Not Disturb and silent mode.
+- **Contacts, photos & notifications**: contact lookup for text drafts, sending your latest screenshot, and "file received" alerts.
+- **Notification access**, **Allowed notification apps** and **Mirror notifications to PC**: the agent can read and reply to notifications from allowed apps, and mirrored notifications appear as corner cards on the PC with **Reply** and **Dismiss on phone**. Notification text is kept in memory only.
+
+File and text handoff:
+- **Send to PC** appears in every app's Share menu. Files go to `Downloads\\LocalWhisper` on the PC, links open in the PC browser, and text goes to the PC clipboard.
+- Files sent to the phone are saved in `Downloads/LocalWhisper`.
+- Controlling the phone screen from the PC popup only works while the phone is unlocked. A **Controlled from PC · Stop** pill shows on the phone the whole time.
+
+## 6. Scenes
+
+A scene is a named list of PC and phone steps that runs with one command. Scenes are stored in `server/scenes.json`; **Start Work**, **Meeting Mode** and **End of Day** are created on first run and can be edited.
+
+- **Run:** tap a scene chip on the phone or in the PC popup, or ask: *"Run Meeting Mode"*. If any step would normally ask for approval (for example locking the PC), you are asked once for the whole scene.
+- **Create:** *"Save a scene called Focus that mutes my mic and turns on Do Not Disturb on my phone"*.
+- **Save a layout:** *"Save my current window layout as Start Work"*. The scene's other steps are kept.
+- **Allowed steps:** AHK macros, app and window actions, media, URLs, PC audio, display and power, window layout, clipboard writes, phone intents, phone controls, and waits of up to 5 s. A scene can have up to 20 steps.
+- **API:** `GET /api/scenes`, and `POST /api/scenes/{name}/run` with `{"approved": true}` after confirming.
+
+## 7. Agent Tools That Ask First
+
+| Tool | Asks for approval |
+|---|---|
+| Clicking or typing on the PC or phone screen | Always |
+| `control_pc_power` | Sleep, hibernate, shutdown, restart (not `cancel_shutdown`) |
+| `manage_pc_app` | Closing a window, locking the PC, launching an app that is not on the safe list |
+| `read_pc_image`, `send_pc_file_to_phone`, `send_phone_file_to_pc` | Always |
+| `reply_to_phone_notification` | Always |
+| `save_scene`, `delete_scene` | Always |
+| `run_scene` | Once, only when a step would normally ask |
+| Typing, opening URLs or launching apps after screen, clipboard, notification or photo text was read in the same turn | Always |

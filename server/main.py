@@ -32,6 +32,7 @@ from asr_engine import AsrEngine  # noqa: E402
 from client_hub import ClientDispatchError, ClientHub, NoClientConnectedError  # noqa: E402
 from handoff import HandoffError, HandoffStore, save_upload  # noqa: E402
 from phone_hub import PhoneHub  # noqa: E402
+from scenes import SceneStore  # noqa: E402
 from discovery import (  # noqa: E402
     DEFAULT_DISCOVERY_PORT as DISCOVERY_PORT_FALLBACK,
     default_server_name,
@@ -73,6 +74,7 @@ DEFAULT_DISCOVERY_PORT = int(
 UPDATE_EXIT_CODE = 42
 SUPERVISED_ENV_VAR = "LOCALWHISPER_SUPERVISED"
 DEFAULT_HANDOFF_DIR = SERVER_DIR / "handoff"
+DEFAULT_SCENES_PATH = SERVER_DIR / "scenes.json"
 FILE_TARGETS = ("pc", "phone")
 # Uvicorn pings every WebSocket at this interval. Phones never ping on their own (battery), so a
 # long interval keeps their radio asleep; PC clients still ping every 20 s from their side.
@@ -93,6 +95,11 @@ class ClipboardTransferRequest(BaseModel):
 
 class NotificationReplyRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=4000)
+
+
+class SceneRunRequest(BaseModel):
+    approved: bool = Field(default=False)
+    client_id: str | None = Field(default=None)
 
 
 class AgentRunRequest(BaseModel):
@@ -182,12 +189,14 @@ def create_app(
     discovery_port: int = DEFAULT_DISCOVERY_PORT,
     server_name: str | None = None,
     handoff_dir: Path | None = None,
+    scenes_path: Path | None = None,
 ) -> FastAPI:
     asr_selection = AsrSelection()
     display_name = (server_name or "").strip() or default_server_name()
     client_hub = ClientHub()
     phone_hub = PhoneHub()
     handoff_store = HandoffStore(handoff_dir or DEFAULT_HANDOFF_DIR)
+    scene_store = SceneStore(scenes_path or DEFAULT_SCENES_PATH)
     agent_engine = AgentEngine(
         client_hub=client_hub,
         llm_base_url=llm_base_url,
@@ -195,6 +204,7 @@ def create_app(
         llm_api_key=llm_api_key,
         enable_thinking=True,
         phone_hub=phone_hub,
+        scene_store=scene_store,
     )
 
     async def _forward_phone_notification_event(event: str, data: dict[str, object]) -> None:
@@ -568,6 +578,25 @@ def create_app(
         if res.get("ok") is False:
             raise HTTPException(status_code=400, detail=str(res.get("error") or "Could not dismiss"))
         return res
+
+    @app.get("/api/scenes")
+    async def list_scenes_endpoint() -> dict[str, object]:
+        return {"scenes": agent_engine.describe_scenes()}
+
+    @app.post("/api/scenes/{name}/run")
+    async def run_scene_endpoint(name: str, request: SceneRunRequest) -> dict[str, object]:
+        scene = scene_store.get(name)
+        if scene is None:
+            raise HTTPException(status_code=404, detail=f"Scene '{name}' not found")
+        needs_approval, description = agent_engine.scene_approval(scene)
+        if needs_approval and not request.approved:
+            return {"status": "confirmation_required", "scene": scene.name, "description": description}
+        try:
+            result = await agent_engine.run_scene_now(scene.name, request.client_id)
+        except Exception as exc:
+            LOGGER.exception("Scene '%s' failed", scene.name)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {"status": "completed", **result}
 
     @app.websocket("/ws/phone")
     async def phone_websocket(

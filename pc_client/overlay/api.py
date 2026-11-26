@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from typing import Any, Callable
+from urllib.parse import quote
 
 import httpx
 
@@ -127,6 +128,27 @@ class OverlayServerApi:
             if resp.status_code >= 400:
                 raise RuntimeError(_extract_error(resp))
             return str(resp.json().get("text", "") or "")
+
+    def fetch_scenes(self) -> list[dict[str, Any]]:
+        with httpx.Client(timeout=CONNECT_TIMEOUT_S) as client:
+            resp = client.get(f"{self.base_url}/api/scenes")
+            if resp.status_code >= 400:
+                return []
+            raw = resp.json().get("scenes")
+            if not isinstance(raw, list):
+                return []
+            return [item for item in raw if isinstance(item, dict) and item.get("name")]
+
+    def run_scene(self, name: str, approved: bool, client_id: str | None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"approved": bool(approved)}
+        if client_id:
+            payload["client_id"] = client_id
+        with httpx.Client(timeout=self._timeout) as client:
+            resp = client.post(f"{self.base_url}/api/scenes/{quote(name, safe='')}/run", json=payload)
+            if resp.status_code >= 400:
+                raise RuntimeError(_extract_error(resp))
+            data = resp.json()
+            return data if isinstance(data, dict) else {}
 
     def reply_phone_notification(self, notification_id: str, text: str) -> None:
         with httpx.Client(timeout=CONNECT_TIMEOUT_S) as client:

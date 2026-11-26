@@ -19,7 +19,7 @@ import httpx
 
 from agent_tools import EXTRA_AGENT_TOOLS, EXTRA_SYSTEM_PROMPT
 from client_hub import ClientDispatchError, ClientHub, NoClientConnectedError
-from phone_bridge import ORIGIN_PHONE, PhoneBridge, normalize_origin
+from phone_bridge import ORIGIN_PC_OVERLAY, ORIGIN_PHONE, PhoneBridge, normalize_origin
 from phone_elements import (
     box_2d_to_screen_box,
     format_phone_screen_payload,
@@ -27,6 +27,14 @@ from phone_elements import (
     screen_size_from,
 )
 from phone_hub import PhoneHub
+from scenes import (
+    WAIT_TOOL,
+    Scene,
+    SceneRunner,
+    SceneStore,
+    layout_to_arrange_steps,
+    parse_scene_steps,
+)
 
 LOGGER = logging.getLogger("localwhisper.agent")
 
@@ -72,6 +80,8 @@ PHONE_LINK_TOOLS = frozenset(
         "dismiss_phone_notification",
     }
 )
+SCENE_TOOLS = frozenset({"list_scenes", "run_scene", "save_scene", "delete_scene"})
+MAX_SCENE_APPROVAL_PREVIEW = 3
 # Tools whose results contain untrusted on-screen, clipboard, notification or in-image text.
 SCREEN_READING_TOOLS = SNAPSHOT_TOOLS | IMAGE_TOOLS | frozenset({"read_clipboard", "list_phone_notifications"})
 MAX_CONSECUTIVE_SCREEN_READS = 2
@@ -1069,6 +1079,14 @@ def check_confirmation_required(
         return True, describe_click(tool_name, arguments, {})
     if tool_name in GATED_IMAGE_TOOLS:
         return True, describe_image_request(tool_name, arguments)
+    if tool_name == "save_scene":
+        name = _shorten(str(arguments.get("name", "") or "scene"), 40)
+        raw_steps = arguments.get("steps")
+        count = len(raw_steps) if isinstance(raw_steps, list) else 0
+        extra = " plus your current window layout" if bool(arguments.get("capture_current_pc_layout")) else ""
+        return True, f"Save scene '{name}' with {count} steps{extra}?"
+    if tool_name == "delete_scene":
+        return True, f"Delete scene '{_shorten(str(arguments.get('name', '') or 'scene'), 40)}'?"
     if tool_name == "control_pc_power":
         action = str(arguments.get("action", "") or "").strip().lower()
         if action in GATED_POWER_ACTIONS:
@@ -1252,6 +1270,14 @@ def summarize_tool_call(tool_name: str, arguments: dict[str, Any]) -> str:
     if tool_name == "dismiss_phone_notification":
         nid = str(arguments.get("notification_id", "") or "").strip()
         return f"Dismiss Notification {nid}".strip()
+    if tool_name == "list_scenes":
+        return "List Scenes"
+    if tool_name in ("run_scene", "save_scene", "delete_scene"):
+        verb = {"run_scene": "Run", "save_scene": "Save", "delete_scene": "Delete"}[tool_name]
+        name = _shorten(str(arguments.get("name", "") or ""), 30)
+        return f"{verb} Scene '{name}'" if name else f"{verb} Scene"
+    if tool_name == WAIT_TOOL:
+        return f"Wait {arguments.get('ms', 0)} ms"
     return tool_name
 
 
@@ -1595,6 +1621,7 @@ class AgentEngine:
         llm_api_key: str = "local",
         enable_thinking: bool = True,
         phone_hub: PhoneHub | None = None,
+        scene_store: SceneStore | None = None,
     ) -> None:
         self.client_hub = client_hub
         self.llm_base_url = llm_base_url.rstrip("/")
@@ -1602,6 +1629,7 @@ class AgentEngine:
         self.llm_api_key = llm_api_key.strip() or "local"
         self.enable_thinking = enable_thinking
         self.phone_bridge = PhoneBridge(phone_hub)
+        self.scene_store = scene_store
         self._remote_stop_epoch = 0
         self._sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
@@ -2139,6 +2167,8 @@ class AgentEngine:
         repeated = self._check_repeated_screen_read(session, tool_name, arguments)
         if repeated is not None:
             return repeated
+        if tool_name == "run_scene":
+            return self._prepare_run_scene_call(session, arguments)
         if tool_name in PHONE_SCREEN_TOOLS:
             return await self._prepare_phone_tool_call(session, tool_name, arguments)
         if tool_name in PC_CLICK_TOOLS:
@@ -2787,6 +2817,9 @@ class AgentEngine:
         if tool_name in PHONE_LINK_TOOLS:
             return await self._execute_phone_link_tool(session, tool_name, arguments, client_id, summary)
 
+        if tool_name in SCENE_TOOLS:
+            return await self._execute_scene_tool(session, tool_name, arguments, client_id, summary)
+
         if tool_name == "trigger_android_intent":
             action_payload = build_android_intent_payload(arguments)
             if self._phone_runs_remotely(session):
@@ -2828,6 +2861,162 @@ class AgentEngine:
                 ToolCallRecord(tool=tool_name, status="error", summary=f"{summary} (failed)")
             )
             return {"ok": False, "error": str(exc)}
+
+    # ---------------------------------------------------------------- Scenes
+
+    def scene_approval(self, scene: Scene) -> tuple[bool, str]:
+        """(needs approval, description): a scene asks once when any step would normally ask."""
+        gated = [
+            step
+            for step in scene.steps
+            if step.tool != WAIT_TOOL and check_confirmation_required(step.tool, step.arguments)[0]
+        ]
+        if not gated:
+            return False, ""
+        preview = "; ".join(
+            summarize_tool_call(step.tool, step.arguments) for step in gated[:MAX_SCENE_APPROVAL_PREVIEW]
+        )
+        more = f" (+{len(gated) - MAX_SCENE_APPROVAL_PREVIEW} more)" if len(gated) > MAX_SCENE_APPROVAL_PREVIEW else ""
+        return True, f"Run scene '{scene.name}' ({len(scene.steps)} steps)? It includes: {preview}{more}"
+
+    def _scene_summary(self, scene: Scene) -> dict[str, Any]:
+        needs_approval, _description = self.scene_approval(scene)
+        steps = [
+            f"Wait {step.arguments.get('ms', 0)} ms"
+            if step.tool == WAIT_TOOL
+            else summarize_tool_call(step.tool, step.arguments)
+            for step in scene.steps
+        ]
+        return {
+            "name": scene.name,
+            "description": scene.description,
+            "step_count": len(scene.steps),
+            "steps": steps,
+            "needs_approval": needs_approval,
+            "continue_on_error": scene.continue_on_error,
+        }
+
+    def describe_scenes(self) -> list[dict[str, Any]]:
+        if self.scene_store is None:
+            return []
+        return [self._scene_summary(scene) for scene in self.scene_store.list()]
+
+    async def run_scene_now(self, name: str, client_id: str | None = None) -> dict[str, Any]:
+        """Runs a scene's steps. Approval, when needed, must already have been given by the caller."""
+        store = self.scene_store
+        scene = store.get(name) if store is not None else None
+        if scene is None:
+            return {
+                "ok": False,
+                "reason": "scene_not_found",
+                "error": f"No scene named '{_shorten(str(name), 40)}'.",
+                "available_scenes": store.names() if store is not None else [],
+            }
+        # Scenes start on the server, so phone steps always go over the phone link.
+        scene_session = AgentSession(
+            session_id=f"scene_{uuid.uuid4().hex[:8]}",
+            origin=ORIGIN_PC_OVERLAY,
+            remote_stop_epoch=self._remote_stop_epoch,
+        )
+
+        async def _execute(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            return await self._execute_single_tool(scene_session, tool_name, arguments, client_id)
+
+        LOGGER.info("Running scene '%s' (%d steps)", scene.name, len(scene.steps))
+        return await SceneRunner(_execute, summarize=summarize_tool_call).run(scene)
+
+    def _prepare_run_scene_call(self, session: AgentSession, arguments: dict[str, Any]) -> PreparedCall:
+        name = str(arguments.get("name", "") or "").strip()
+        scene = self.scene_store.get(name) if self.scene_store is not None else None
+        if scene is None:
+            session.tool_records.append(
+                ToolCallRecord(
+                    tool="run_scene",
+                    status="error",
+                    summary=f"{summarize_tool_call('run_scene', arguments)} (not found)",
+                )
+            )
+            return PreparedCall(
+                arguments=arguments,
+                needs_confirmation=False,
+                marks_screen_read=False,
+                early_output={
+                    "ok": False,
+                    "reason": "scene_not_found",
+                    "error": f"No scene named '{_shorten(name, 40)}'. Call list_scenes to see saved scenes.",
+                    "available_scenes": self.scene_store.names() if self.scene_store is not None else [],
+                },
+            )
+        needs, description = self.scene_approval(scene)
+        return PreparedCall(arguments={"name": scene.name}, needs_confirmation=needs, description=description)
+
+    async def _execute_scene_tool(
+        self,
+        session: AgentSession,
+        tool_name: str,
+        arguments: dict[str, Any],
+        client_id: str | None,
+        summary: str,
+    ) -> dict[str, Any]:
+        if self.scene_store is None:
+            result: dict[str, Any] = {"ok": False, "error": "Scenes are not available on this server."}
+        elif tool_name == "list_scenes":
+            result = {"ok": True, "scenes": self.describe_scenes()}
+        elif tool_name == "run_scene":
+            result = await self.run_scene_now(str(arguments.get("name", "") or ""), client_id)
+        elif tool_name == "save_scene":
+            result = await self._save_scene_from_args(arguments, client_id)
+        else:
+            deleted = self.scene_store.delete(arguments.get("name", ""))
+            result = {"ok": deleted, "deleted": deleted}
+            if not deleted:
+                result["error"] = "No scene with that name."
+        ok = result.get("ok") is not False
+        if tool_name == "run_scene" and "steps_run" in result:
+            label = f"{summary} ({result.get('steps_ok', 0)}/{result.get('steps_run', 0)} steps ok)"
+        else:
+            label = summary if ok else f"{summary} (not done)"
+        session.tool_records.append(
+            ToolCallRecord(tool=tool_name, status="ok" if ok else "error", summary=label)
+        )
+        return result
+
+    async def _save_scene_from_args(self, arguments: dict[str, Any], client_id: str | None) -> dict[str, Any]:
+        store = self.scene_store
+        if store is None:
+            return {"ok": False, "error": "Scenes are not available on this server."}
+        try:
+            steps = parse_scene_steps(arguments.get("steps"))
+        except ValueError as exc:
+            return {"ok": False, "reason": "invalid_steps", "error": str(exc)}
+        name = arguments.get("name", "")
+        description = arguments.get("description", "")
+        existing = store.get(name)
+        capture_layout = bool(arguments.get("capture_current_pc_layout", False))
+        if capture_layout:
+            if not steps and existing is not None:
+                steps = [step for step in existing.steps if step.tool != "arrange_pc_windows"]
+            try:
+                _cid, _cname, layout = await self.client_hub.call_tool(
+                    tool_name="get_pc_layout",
+                    arguments={},
+                    client_id=client_id,
+                )
+            except (NoClientConnectedError, ClientDispatchError, ValueError) as exc:
+                return {"ok": False, "reason": "layout_unavailable", "error": str(exc)}
+            steps.extend(layout_to_arrange_steps(layout))
+        if not str(description or "").strip() and existing is not None:
+            description = existing.description
+        try:
+            scene = store.save(
+                name=name,
+                description=description,
+                steps=steps,
+                continue_on_error=bool(arguments.get("continue_on_error", True)),
+            )
+        except ValueError as exc:
+            return {"ok": False, "reason": "invalid_scene", "error": str(exc)}
+        return {"ok": True, "scene": self._scene_summary(scene)}
 
     async def _execute_phone_link_tool(
         self,

@@ -49,6 +49,7 @@ SHEET_WIDTH = 436
 MAX_CHAT_SCROLL_HEIGHT = 350
 MAX_ATTACHMENTS = 2
 MAX_ATTACHMENT_WIDTH = 1280
+MAX_SCENE_CHIPS = 6
 AHK_QUICK_TOKENS = ("{Enter}", "{Tab}", "{Backspace}", "{Esc}", "{^a}", "{^c}", "{^v}")
 
 
@@ -63,6 +64,9 @@ class _UiBridge(QObject):
     agent_progress = Signal(object)
     agent_done = Signal(object, bool)
     agent_failed = Signal(str, bool)
+    scenes_loaded = Signal(list)
+    scene_needs_approval = Signal(str, str)
+    scene_done = Signal(str, bool, str)
 
 
 class _PromptTextEdit(QTextEdit):
@@ -248,6 +252,15 @@ class JarvisSheetWindow(QWidget):
         self._attachments_bar.setVisible(False)
         card_layout.addWidget(self._attachments_bar)
 
+        # One-tap scene chips
+        self._scenes: list[dict[str, Any]] = []
+        self._scenes_bar = QWidget(self._card)
+        self._scenes_layout = QHBoxLayout(self._scenes_bar)
+        self._scenes_layout.setContentsMargins(0, 0, 0, 0)
+        self._scenes_layout.setSpacing(6)
+        self._scenes_bar.setVisible(False)
+        card_layout.addWidget(self._scenes_bar)
+
         # Stage widgets
         self._waveform = WaveformWidget(p, self._card)
         card_layout.addWidget(self._waveform)
@@ -327,6 +340,12 @@ class JarvisSheetWindow(QWidget):
         )
         self._error_label.setVisible(False)
         card_layout.addWidget(self._error_label)
+
+        self._info_label = QLabel("", self._card)
+        self._info_label.setWordWrap(True)
+        self._info_label.setStyleSheet(f"QLabel {{ color: {p.text_secondary}; font-size: 12px; border: none; }}")
+        self._info_label.setVisible(False)
+        card_layout.addWidget(self._info_label)
 
         # AHK quick tokens bar (dictation review only)
         self._chips_bar = QWidget(self._card)
@@ -417,6 +436,9 @@ class JarvisSheetWindow(QWidget):
         self._bridge.agent_progress.connect(self._on_agent_progress)
         self._bridge.agent_done.connect(self._on_agent_done)
         self._bridge.agent_failed.connect(self._on_agent_failed)
+        self._bridge.scenes_loaded.connect(self._on_scenes_loaded)
+        self._bridge.scene_needs_approval.connect(self._on_scene_needs_approval)
+        self._bridge.scene_done.connect(self._on_scene_done)
 
     # ------------------------------------------------------------ Summon / Show / Hide
 
@@ -433,6 +455,7 @@ class JarvisSheetWindow(QWidget):
         prev_hwnd = current_foreground_hwnd(self._excluded_hwnds_getter())
         self._step_aside.state.on_overlay_shown(prev_hwnd)
         self._refresh_clients_async()
+        self._refresh_scenes_async()
 
         if self._runtime_phase in ("thinking", "paused", "confirm"):
             self._position_near_cursor_and_show()
@@ -1120,6 +1143,7 @@ class JarvisSheetWindow(QWidget):
         self._chips_bar.setVisible(state in ("review", "sending") and not self._is_agent_mode)
         self._chat_scroll.setVisible(state in ("agent_thinking", "agent_result"))
         self._interject_bar.setVisible(state == "agent_thinking")
+        self._update_scenes_bar_visibility()
         self._configure_transport_controls(state)
         self.adjustSize()
 
@@ -1208,6 +1232,89 @@ class JarvisSheetWindow(QWidget):
                 self._chat_scroll.verticalScrollBar().maximum()
             ),
         )
+
+    # ------------------------------------------------------------ Scenes
+
+    def _refresh_scenes_async(self) -> None:
+        def _worker() -> None:
+            try:
+                scenes = self._api.fetch_scenes()
+            except Exception:
+                scenes = []
+            self._bridge.scenes_loaded.emit(scenes)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_scenes_loaded(self, scenes: list) -> None:
+        self._scenes = [s for s in scenes if isinstance(s, dict) and s.get("name")]
+        while self._scenes_layout.count() > 0:
+            item = self._scenes_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        p = self._palette
+        for scene in self._scenes[:MAX_SCENE_CHIPS]:
+            name = str(scene["name"])
+            btn = QPushButton(f"▶ {name}", self._scenes_bar)
+            btn.setToolTip(str(scene.get("description", "") or name))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(
+                f"QPushButton {{ background-color: {p.accent_container}; color: {p.accent}; border: none; border-radius: 11px; padding: 4px 10px; font-size: 12px; font-weight: bold; }}"
+            )
+            btn.clicked.connect(lambda _checked=False, n=name: self._run_scene(n, approved=False))
+            self._scenes_layout.addWidget(btn)
+        self._scenes_layout.addStretch(1)
+        self._update_scenes_bar_visibility()
+        self.adjustSize()
+
+    def _update_scenes_bar_visibility(self) -> None:
+        show = bool(self._scenes) and self._ui_state in ("recording", "review", "agent_result")
+        self._scenes_bar.setVisible(show)
+
+    def _run_scene(self, name: str, approved: bool) -> None:
+        self._clear_error()
+        self._show_info(f"Running scene '{name}'…")
+        target_id = self._effective_target_id()
+
+        def _worker() -> None:
+            try:
+                result = self._api.run_scene(name, approved=approved, client_id=target_id)
+            except Exception as exc:
+                self._bridge.scene_done.emit(name, False, str(exc))
+                return
+            if result.get("status") == "confirmation_required":
+                description = str(result.get("description", "") or f"Run scene '{name}'?")
+                self._bridge.scene_needs_approval.emit(name, description)
+                return
+            ok = bool(result.get("ok", False))
+            message = f"Scene '{name}': {result.get('steps_ok', 0)}/{result.get('steps_run', 0)} steps OK"
+            self._bridge.scene_done.emit(name, ok, message)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_scene_needs_approval(self, name: str, description: str) -> None:
+        self._show_info("")
+        answer = QMessageBox.question(
+            self,
+            "Run scene?",
+            description,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._run_scene(name, approved=True)
+
+    def _on_scene_done(self, _name: str, ok: bool, message: str) -> None:
+        if ok:
+            self._show_info(message)
+            return
+        self._show_info("")
+        self._show_error(message or "Scene failed")
+
+    def _show_info(self, message: str) -> None:
+        self._info_label.setText(message)
+        self._info_label.setVisible(bool(message))
+        self.adjustSize()
 
     def _show_error(self, message: str) -> None:
         self._error_label.setText(message)

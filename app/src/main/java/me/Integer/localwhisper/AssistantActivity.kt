@@ -117,6 +117,8 @@ class AssistantActivity : AppCompatActivity() {
     private var lastConfirmationId: String? = null
     private var interjectHadText = false
     private val pendingAttachments = mutableListOf<PromptImageAttachment>()
+    private var availableScenes: List<SceneInfo> = emptyList()
+    private var scenesJob: Job? = null
     private var pendingCameraUri: Uri? = null
 
     private val takePictureLauncher =
@@ -1588,6 +1590,84 @@ class AssistantActivity : AppCompatActivity() {
         val baseUrl = prefs.buildBaseUrl() ?: return
         clientsJob?.cancel()
         clientsJob = lifecycleScope.launch { refreshConnectedClients(baseUrl) }
+        refreshScenesInBackground(baseUrl)
+    }
+
+    // ------------------------------------------------------------ Scenes
+
+    private fun refreshScenesInBackground(baseUrl: String) {
+        if (availableScenes.isNotEmpty() || scenesJob?.isActive == true) return
+        scenesJob = lifecycleScope.launch {
+            api.fetchScenes(baseUrl)
+                .onSuccess { scenes -> availableScenes = scenes }
+                .onFailure { exc -> Log.w(TAG, "Could not fetch scenes", exc) }
+            renderScenesBar(currentState)
+        }
+    }
+
+    private fun renderScenesBar(state: UiState) {
+        val group = binding.sceneChipGroup
+        val show = availableScenes.isNotEmpty() &&
+            (state == UiState.RECORDING || state == UiState.REVIEW || state == UiState.AGENT_RESULT)
+        binding.sceneChipScroll.visibility = visibleIf(show)
+        if (!show || group.tag === availableScenes) return
+        group.removeAllViews()
+        group.tag = availableScenes
+        val chipBg = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.lw_accent_container))
+        val chipText = ContextCompat.getColor(this, R.color.lw_accent)
+        for (scene in availableScenes.take(MAX_SCENE_CHIPS)) {
+            val chip = Chip(this).apply {
+                text = getString(R.string.scene_chip_format, scene.name)
+                textSize = 12f
+                isCheckable = false
+                chipBackgroundColor = chipBg
+                chipStrokeWidth = 0f
+                setTextColor(chipText)
+                setEnsureMinTouchTargetSize(false)
+                setOnClickListener {
+                    performTapHaptic(it)
+                    runScene(scene.name, approved = false)
+                }
+            }
+            group.addView(chip)
+        }
+    }
+
+    private fun runScene(name: String, approved: Boolean) {
+        val baseUrl = prefs.buildBaseUrl()
+        if (baseUrl == null) {
+            showError(getString(R.string.invalid_server_config))
+            return
+        }
+        clearError()
+        val targetClientId = selectedClient?.id?.takeIf { it != LOCAL_TARGET_ID }
+        Toast.makeText(this, getString(R.string.scene_running_format, name), Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch {
+            api.runScene(baseUrl, name, approved, targetClientId)
+                .onSuccess { response -> onSceneResponse(name, response) }
+                .onFailure { exc ->
+                    showError(exc.message ?: getString(R.string.scene_failed_format, name))
+                }
+        }
+    }
+
+    private fun onSceneResponse(name: String, response: SceneRunResponse) {
+        if (isFinishing || isDestroyed) return
+        if (response.status == "confirmation_required") {
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.scene_confirm_title)
+                .setMessage(response.description.ifBlank { getString(R.string.scene_confirm_default_format, name) })
+                .setNegativeButton(R.string.assistant_cancel, null)
+                .setPositiveButton(R.string.scene_confirm_run) { _, _ -> runScene(name, approved = true) }
+                .show()
+            return
+        }
+        val message = getString(R.string.scene_done_format, name, response.stepsOk, response.stepsRun)
+        if (response.ok) {
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        } else {
+            showError(message)
+        }
     }
 
     private suspend fun refreshConnectedClients(baseUrl: String) {
@@ -1668,6 +1748,7 @@ class AssistantActivity : AppCompatActivity() {
         renderAgentModeButton(state)
         renderSessionBar(state)
         renderAttachmentsBar()
+        renderScenesBar(state)
         updateTranscriptHint()
         if (state == UiState.AGENT_RESULT) {
             adjustAgentScrollHeightAndScrollToBottom()
@@ -1988,6 +2069,7 @@ class AssistantActivity : AppCompatActivity() {
         private const val TIMELINE_TAG_THINKING = "timeline_thinking"
         private const val TIMELINE_TAG_TOOL = "timeline_tool"
         private const val SERVER_BAR_HIDE_DELAY_MS = 2_500L
+        private const val MAX_SCENE_CHIPS = 8
         private val AHK_QUICK_TOKENS = listOf(
             "{Enter}",
             "{Tab}",
